@@ -245,6 +245,7 @@ final class Line: ObservableObject {
     /// drag ends on the Dock's Trash, macOS only reports it: deleting the file
     /// is the source app's job, as Finder does.
     func trash(_ id: UUID) {
+        if pin(for: id) != nil { return takeOff(id) }
         guard let item = items.first(where: { $0.id == id }) else { return }
         // Clips are scratch: taking one down already deletes it.
         if Clips.contains(item.url) { return drop(id) }
@@ -273,7 +274,24 @@ final class Line: ObservableObject {
 
     /// The corner cross and "Take down" both end up here.
     func discard(_ id: UUID) {
+        if pin(for: id) != nil { return takeOff(id) }
         if isInInbox(id) { trash(id) } else { drop(id) }
+    }
+
+    /// The cross on a card of your own line. A pin is something you chose to
+    /// keep, so it is asked about before it goes for good.
+    func takeOff(_ id: UUID) {
+        guard let pin = pin(for: id) else { return }
+        let alert = NSAlert()
+        alert.messageText = String(format: L("Take “%@” off “%@”?"), pin.title, pin.group)
+        alert.informativeText = L("It is deleted from the Keychain and cannot be brought back.")
+        alert.addButton(withTitle: L("Take off"))
+        alert.addButton(withTitle: L("Cancel"))
+        alert.buttons[0].hasDestructiveAction = true
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        Bag.shared.remove(pin.id)
+        play("Pop", volume: 0.25)
     }
 
     /// Inbox mode: keep a screenshot by moving it to the Desktop.

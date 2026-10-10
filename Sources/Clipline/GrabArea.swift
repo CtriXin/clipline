@@ -58,7 +58,7 @@ struct GrabArea: NSViewRepresentable {
                 move.submenu = groups
                 menu.addItem(move)
                 menu.addItem(.separator())
-                menu.addItem(ClosureMenuItem(L("Take off this line")) { Bag.shared.remove(pin.id) })
+                menu.addItem(ClosureMenuItem(L("Take off this line")) { line.takeOff(id) })
                 return menu
             }
             // Text lives only in memory: there is no file to open or show.

@@ -49,3 +49,6 @@
 "Empty line: right-click a card on Recent › Hang on" = "这根绳还空着：在「最近」里右键卡片 › 挂到";
 "⇥ switch line · ⌘1–9 copy · hold ⌥ show keys · esc" = "⇥ 换绳 · ⌘1–9 复制 · 按住 ⌥ 看原文 · esc 收起";
 "What is this? (site, account or use)" = "这是什么？（网站 / 账号 / 用途）";
+"Take “%@” off “%@”?" = "把「%@」从「%@」取下？";
+"It is deleted from the Keychain and cannot be brought back." = "会从钥匙串中删除，无法恢复。";
+"Take off" = "取下";

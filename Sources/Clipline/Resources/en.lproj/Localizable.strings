@@ -51,3 +51,6 @@
 "Empty line: right-click a card on Recent › Hang on" = "Empty line: right-click a card on Recent › Hang on";
 "⇥ switch line · ⌘1–9 copy · hold ⌥ show keys · esc" = "⇥ switch line · ⌘1–9 copy · hold ⌥ show keys · esc";
 "What is this? (site, account or use)" = "What is this? (site, account or use)";
+"Take “%@” off “%@”?" = "Take “%@” off “%@”?";
+"It is deleted from the Keychain and cannot be brought back." = "It is deleted from the Keychain and cannot be brought back.";
+"Take off" = "Take off";
