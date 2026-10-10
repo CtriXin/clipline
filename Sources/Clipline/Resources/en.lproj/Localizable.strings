@@ -9,7 +9,6 @@
 "Not now" = "Not now";
 "Hide line" = "Hide line";
 "Show line" = "Show line";
-"Take everything down" = "Take everything down";
 "Handle screenshots" = "Handle screenshots";
 "Screenshots hang instantly and skip the Desktop" = "Screenshots hang instantly and skip the Desktop";
 "Open screenshots folder" = "Open screenshots folder";
@@ -87,3 +86,13 @@
 "Turn on Clipline in the list, then come back here." = "Turn on Clipline in the list, then come back here.";
 "Version" = "Version";
 "What hangs on the line" = "What hangs on the line";
+"Take everything off Recent" = "Take everything off Recent";
+"Click to copy" = "Click to copy";
+"Double-click to open" = "Double-click to open";
+"Space: Quick Look" = "Space: Quick Look";
+"Hold ⌥ to show the key" = "Hold ⌥ to show the key";
+"Key, partly hidden" = "Key, partly hidden";
+"Text" = "Text";
+"Link" = "Link";
+"Picture" = "Picture";
+"%d characters" = "%d characters";

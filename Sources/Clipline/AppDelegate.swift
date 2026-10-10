@@ -345,7 +345,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let lowest = self.line.visible.filter { !$0.falling }
                 .compactMap { self.cardFrame(for: $0.id)?.minY }.min() ?? card.minY
             let below = CGRect(x: card.minX, y: lowest - 8, width: card.width, height: card.maxY - lowest + 8)
-            self.preview.show(item.url, below: below, on: screen)
+            self.preview.show(item.url, below: below, pointingAt: card.midX, on: screen)
         }
         previewWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
@@ -868,7 +868,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         toggleItem.keyEquivalentModifierMask = shortcut.menuModifiers
         menu.addItem(toggleItem)
 
-        let clearItem = ClosureMenuItem(L("Take everything down")) { [weak self] in
+        let clearItem = ClosureMenuItem(L("Take everything off Recent")) { [weak self] in
             self?.line.clear()
         }
         clearItem.isEnabled = line.liveCount > 0

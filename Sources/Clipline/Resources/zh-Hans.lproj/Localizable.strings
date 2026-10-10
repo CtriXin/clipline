@@ -7,7 +7,6 @@
 "Not now" = "以后再说";
 "Hide line" = "隐藏晾衣绳";
 "Show line" = "显示晾衣绳";
-"Take everything down" = "全部取下";
 "Handle screenshots" = "接管截图";
 "Screenshots hang instantly and skip the Desktop" = "截图即刻挂上，不再经过桌面";
 "Open screenshots folder" = "打开截图文件夹";
@@ -85,3 +84,13 @@
 "Turn on Clipline in the list, then come back here." = "在列表里打开 Clipline，再回到这里。";
 "Version" = "版本";
 "What hangs on the line" = "挂什么";
+"Take everything off Recent" = "取下「最近」里的全部";
+"Click to copy" = "点击复制";
+"Double-click to open" = "双击打开";
+"Space: Quick Look" = "空格：Quick Look";
+"Hold ⌥ to show the key" = "按住 ⌥ 显示原文";
+"Key, partly hidden" = "密钥（已部分隐藏）";
+"Text" = "文字";
+"Link" = "链接";
+"Picture" = "图片";
+"%d characters" = "%d 字";
