@@ -43,6 +43,20 @@ final class Line: ObservableObject {
     /// Brought up from the keyboard: ⌘1–9 copy, Tab switches lines, Esc leaves.
     @Published var keyboardMode = false
     static let tabsID = UUID()
+    static let moreLeftID = UUID()
+    /// The pointer brushing past a card: which one, and how hard (degrees).
+    let stirs = PassthroughSubject<(UUID, Double), Never>()
+    private var lastStir: [UUID: Date] = [:]
+
+    /// Brushes a card, at most a few times a second, so a hand passing
+    /// through sets it swinging instead of jittering.
+    func stir(_ id: UUID, by degrees: Double) {
+        let now = Date()
+        if let last = lastStir[id], now.timeIntervalSince(last) < 0.28 { return }
+        lastStir[id] = now
+        stirs.send((id, degrees))
+    }
+    static let moreRightID = UUID()
     /// How far a line too long for the screen has slid.
     @Published private(set) var scroll: CGFloat = 0
     /// The panel's width, for the scrolling limits.

@@ -25,6 +25,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// ⌘1–9, Tab, Esc: registered only while the line is up from the
     /// keyboard, so they are never taken from other apps otherwise.
     private var keyboardKeys: [HotKey] = []
+    /// The pointer a tick ago, to tell how fast it sweeps across the line.
+    private var lastPointer: (x: CGFloat, at: Date)?
     private let preview = HoverPreview()
     private var previewWork: DispatchWorkItem?
     private var signalSources: [DispatchSourceSignal] = []
@@ -321,6 +323,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         previewWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+    }
+
+    // MARK: Brushing past
+
+    /// Sweeping the pointer sideways through the hanging cards sets them
+    /// swinging, the way a hand brushing along a real line does: the faster
+    /// the sweep, the bigger the swing, always away from the hand.
+    private func brushCards(_ mouse: NSPoint, now: Date) {
+        let x = mouse.x - panel.frame.minX
+        let fromTop = panel.frame.maxY - mouse.y
+        defer { lastPointer = (x, now) }
+        guard let last = lastPointer, !GrabView.isDragging, line.pressedID == nil,
+              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+              fromTop > Layout.ropeTop, fromTop < Layout.panelHeight - 30 else { return }
+        let dt = now.timeIntervalSince(last.at)
+        guard dt > 0, dt < 0.2 else { return }
+        let speed = (x - last.x) / dt          // points per second, + to the right
+        guard abs(speed) > 220 else { return }
+        let width = panel.frame.width
+        let shown = line.visible
+        let lo = min(last.x, x) - Layout.cardWidth / 2, hi = max(last.x, x) + Layout.cardWidth / 2
+        for (i, item) in shown.enumerated() where !item.falling {
+            let cx = Layout.x(index: i, count: shown.count, width: width, scroll: line.scroll)
+            guard cx > lo, cx < hi, Layout.edge(x: cx, width: width) == .inside else { continue }
+            // A push to the right swings the bottom right: a negative angle.
+            line.stir(item.id, by: max(-9, min(9, -Double(speed) / 140)))
+        }
     }
 
     // MARK: Keyboard
@@ -631,6 +660,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         updateMousePassThrough(mouse)
         keepOnActiveSpace()
+        brushCards(mouse, now: now)
 
         // The line's zone runs from its lowest point up to the top of the
         // screen, menu bar included, so moving up never hides it.

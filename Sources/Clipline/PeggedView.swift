@@ -5,8 +5,9 @@ import SwiftUI
 struct PeggedView: View {
     let item: Pegged
     @ObservedObject var line: Line
-    /// Slid past the end of the line: not shown, not clickable.
-    var hidden = false
+    /// Slid past the end of the line: just peeking in, or gone.
+    var edge: Layout.Edge = .inside
+    private var hidden: Bool { edge != .inside }
 
     @State private var swing: Double = 0
     @State private var arrived = false
@@ -35,12 +36,18 @@ struct PeggedView: View {
         .opacity(item.falling || item.flying ? 0 : (arrived ? 1 : 0))
         .transaction { t in if item.falling { t.animation = nil } }
         .animation(.easeOut(duration: 0.16), value: item.flying)
-        .opacity(hidden ? 0 : 1)
+        // A peeking card is faded, soft and a little smaller; it only shows
+        // that the line goes on, and is not clickable.
+        .scaleEffect(edge == .peek ? 0.92 : 1, anchor: .top)
+        .blur(radius: edge == .peek ? 1.5 : 0)
+        .saturation(edge == .peek ? 0.6 : 1)
+        .opacity(edge == .inside ? 1 : (edge == .peek ? 0.55 : 0))
         .allowsHitTesting(!hidden)
-        .animation(.easeOut(duration: 0.15), value: hidden)
+        .animation(.easeOut(duration: 0.2), value: edge)
         .onAppear(perform: arrive)
         .onChange(of: item.flying) { was, now in if was && !now { land() } }
         .onChange(of: line.gust) { _, _ in breeze() }
+        .onReceive(line.stirs) { id, degrees in if id == item.id { nudge(degrees) } }
         .onChange(of: copied) { _, isCopied in if isCopied { nudge(3) } }
     }
 

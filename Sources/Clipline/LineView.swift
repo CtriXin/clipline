@@ -41,6 +41,17 @@ enum Layout {
     static func isOffLine(x: CGFloat, width: CGFloat) -> Bool {
         x < tabsReserve + cardWidth / 2 - 2 || x > width - tabsReserve - cardWidth / 2 + 2
     }
+
+    enum Edge { case inside, peek, gone }
+
+    /// Like cards in a phone carousel, the one just past each end still
+    /// peeks in, faded, so it is clear the line goes on.
+    static func edge(x: CGFloat, width: CGFloat) -> Edge {
+        guard isOffLine(x: x, width: width) else { return .inside }
+        let left = tabsReserve + cardWidth / 2, right = width - tabsReserve - cardWidth / 2
+        let beyond = x < left ? left - x : x - right
+        return beyond <= spacing + 2 ? .peek : .gone
+    }
 }
 
 struct LineView: View {
@@ -54,9 +65,6 @@ struct LineView: View {
                 Rope(width: width, tint: line.shelf.tint)
                     .animation(.easeInOut(duration: 0.25), value: line.shelf)
 
-                ShelfTabs(line: line, bag: bag)
-                    .position(x: 12 + 95, y: Layout.ropeTop + 30)
-
                 if line.visible.isEmpty {
                     Hint(shelf: line.shelf)
                         .position(x: width / 2, y: Layout.ropeY(x: width / 2, width: width) + 34)
@@ -65,12 +73,38 @@ struct LineView: View {
 
                 ForEach(Array(line.visible.enumerated()), id: \.element.id) { index, item in
                     let x = Layout.x(index: index, count: line.visible.count, width: width, scroll: line.scroll)
-                    let off = Layout.isOffLine(x: x, width: width)
                     let ropeY = Layout.ropeY(x: x, width: width)
-                    PeggedView(item: item, line: line, hidden: off)
+                    PeggedView(item: item, line: line, edge: Layout.edge(x: x, width: width))
                         .frame(width: Layout.cardWidth, height: Layout.panelHeight - ropeY, alignment: .top)
                         .position(x: x, y: ropeY - Layout.pinAbove + (Layout.panelHeight - ropeY) / 2)
                 }
+
+                // Frosted ends over the peeking cards, on the sides with more.
+                let live = line.visible.filter { !$0.falling }.count
+                let limit = Layout.maxScroll(count: live, width: width)
+                if limit > 0 {
+                    let shown = Int(Layout.usable(width: width) / Layout.spacing)
+                    let before = line.firstShown
+                    let after = max(0, live - before - max(1, shown))
+                    if line.scroll > 1 {
+                        EdgeFrost(leading: true)
+                            .frame(width: Layout.tabsReserve + 14, height: Layout.panelHeight - 22)
+                            .position(x: (Layout.tabsReserve + 14) / 2, y: 22 + (Layout.panelHeight - 22) / 2)
+                        MoreTag(count: before, leading: true) { line.page(-1) }
+                            .position(x: Layout.tabsReserve - 6, y: Layout.panelHeight - 34)
+                    }
+                    if line.scroll < limit - 1 {
+                        EdgeFrost(leading: false)
+                            .frame(width: Layout.tabsReserve + 14, height: Layout.panelHeight - 22)
+                            .position(x: width - (Layout.tabsReserve + 14) / 2, y: 22 + (Layout.panelHeight - 22) / 2)
+                        MoreTag(count: after, leading: false) { line.page(1) }
+                            .position(x: width - Layout.tabsReserve + 6, y: Layout.panelHeight - 34)
+                    }
+                }
+
+                // Above the cards and the frost, so the tags stay sharp and clickable.
+                ShelfTabs(line: line, bag: bag)
+                    .position(x: 12 + 95, y: Layout.ropeTop + 30)
             }
             .animation(.spring(response: 0.55, dampingFraction: 0.78), value: line.visible.map(\.id))
             .animation(.interactiveSpring(response: 0.3, dampingFraction: 0.86), value: line.scroll)
@@ -166,6 +200,48 @@ private struct ShelfTabs: View {
                 Button(L("Delete group")) { bag.removeGroup(g) }
             }
         }
+    }
+}
+
+/// A strip of frosted glass at an end of the line that fades towards the
+/// cards, so those slid past seem to sink into it.
+private struct EdgeFrost: View {
+    let leading: Bool
+    var body: some View {
+        Rectangle()
+            .fill(.ultraThinMaterial)
+            .mask(LinearGradient(colors: [.black, .black.opacity(0.85), .clear],
+                                 startPoint: leading ? .leading : .trailing,
+                                 endPoint: leading ? .trailing : .leading))
+            .allowsHitTesting(false)
+    }
+}
+
+/// How many more cards are past this end; click to slide a screenful.
+private struct MoreTag: View {
+    let count: Int
+    let leading: Bool
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 3) {
+                if leading { Image(systemName: "chevron.left") }
+                if count > 0 { Text("\(count)") }
+                if !leading { Image(systemName: "chevron.right") }
+            }
+            .font(.system(size: 11, weight: .bold, design: .rounded))
+            .foregroundStyle(.primary.opacity(0.8))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .glassFrame(capsule: true)
+        }
+        .buttonStyle(.plain)
+        .background(
+            GeometryReader { g in
+                Color.clear.preference(key: HitRectsKey.self,
+                                       value: [leading ? Line.moreLeftID : Line.moreRightID: g.frame(in: .global)])
+            }
+        )
     }
 }
 
