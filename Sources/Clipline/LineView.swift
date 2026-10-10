@@ -1,7 +1,8 @@
 import SwiftUI
 
 enum Layout {
-    static let panelHeight: CGFloat = 210
+    /// Tall enough for the longest note (170 pt) below the sagging rope.
+    static let panelHeight: CGFloat = 250
     static let ropeTop: CGFloat = 10
     static let spacing: CGFloat = 174
     static let cardWidth: CGFloat = 150
@@ -42,7 +43,7 @@ enum Layout {
         x < tabsReserve + cardWidth / 2 - 2 || x > width - tabsReserve - cardWidth / 2 + 2
     }
 
-    enum Edge { case inside, peek, gone }
+    enum Edge { case inside, peekLeading, peekTrailing, gone }
 
     /// Like cards in a phone carousel, the one just past each end still
     /// peeks in, faded, so it is clear the line goes on.
@@ -50,7 +51,8 @@ enum Layout {
         guard isOffLine(x: x, width: width) else { return .inside }
         let left = tabsReserve + cardWidth / 2, right = width - tabsReserve - cardWidth / 2
         let beyond = x < left ? left - x : x - right
-        return beyond <= spacing + 2 ? .peek : .gone
+        guard beyond <= spacing + 2 else { return .gone }
+        return x < left ? .peekLeading : .peekTrailing
     }
 }
 
@@ -79,7 +81,7 @@ struct LineView: View {
                         .position(x: x, y: ropeY - Layout.pinAbove + (Layout.panelHeight - ropeY) / 2)
                 }
 
-                // Frosted ends over the peeking cards, on the sides with more.
+                // Tags at the ends that have more, saying how many.
                 let live = line.visible.filter { !$0.falling }.count
                 let limit = Layout.maxScroll(count: live, width: width)
                 if limit > 0 {
@@ -87,16 +89,10 @@ struct LineView: View {
                     let before = line.firstShown
                     let after = max(0, live - before - max(1, shown))
                     if line.scroll > 1 {
-                        EdgeFrost(leading: true)
-                            .frame(width: Layout.tabsReserve + 14, height: Layout.panelHeight - 22)
-                            .position(x: (Layout.tabsReserve + 14) / 2, y: 22 + (Layout.panelHeight - 22) / 2)
                         MoreTag(count: before, leading: true) { line.page(-1) }
                             .position(x: Layout.tabsReserve - 6, y: Layout.panelHeight - 34)
                     }
                     if line.scroll < limit - 1 {
-                        EdgeFrost(leading: false)
-                            .frame(width: Layout.tabsReserve + 14, height: Layout.panelHeight - 22)
-                            .position(x: width - (Layout.tabsReserve + 14) / 2, y: 22 + (Layout.panelHeight - 22) / 2)
                         MoreTag(count: after, leading: false) { line.page(1) }
                             .position(x: width - Layout.tabsReserve + 6, y: Layout.panelHeight - 34)
                     }
@@ -200,20 +196,6 @@ private struct ShelfTabs: View {
                 Button(L("Delete group")) { bag.removeGroup(g) }
             }
         }
-    }
-}
-
-/// A strip of frosted glass at an end of the line that fades towards the
-/// cards, so those slid past seem to sink into it.
-private struct EdgeFrost: View {
-    let leading: Bool
-    var body: some View {
-        Rectangle()
-            .fill(.ultraThinMaterial)
-            .mask(LinearGradient(colors: [.black, .black.opacity(0.85), .clear],
-                                 startPoint: leading ? .leading : .trailing,
-                                 endPoint: leading ? .trailing : .leading))
-            .allowsHitTesting(false)
     }
 }
 

@@ -11,6 +11,7 @@ struct PeggedView: View {
     var x: CGFloat = 0
     private var lean: Double { edge == .inside ? Line.lean(cardX: x, in: line.wind) : 0 }
     private var hidden: Bool { edge != .inside }
+    private var peeking: Bool { edge == .peekLeading || edge == .peekTrailing }
 
     @State private var swing: Double = 0
     @State private var arrived = false
@@ -46,10 +47,17 @@ struct PeggedView: View {
         .animation(.easeOut(duration: 0.16), value: item.flying)
         // A peeking card is faded, soft and a little smaller; it only shows
         // that the line goes on, and is not clickable.
-        .scaleEffect(edge == .peek ? 0.92 : 1, anchor: .top)
-        .blur(radius: edge == .peek ? 1.5 : 0)
-        .saturation(edge == .peek ? 0.6 : 1)
-        .opacity(edge == .inside ? 1 : (edge == .peek ? 0.55 : 0))
+        // It fades out towards the screen edge, nothing laid over the desktop.
+        .scaleEffect(peeking ? 0.94 : 1, anchor: .top)
+        .blur(radius: peeking ? 0.8 : 0)
+        .mask(
+            LinearGradient(stops: peeking ? [.init(color: .black.opacity(0.7), location: 0),
+                                             .init(color: .clear, location: 0.85)]
+                                          : [.init(color: .black, location: 0), .init(color: .black, location: 1)],
+                           startPoint: edge == .peekLeading ? .trailing : .leading,
+                           endPoint: edge == .peekLeading ? .leading : .trailing)
+        )
+        .opacity(edge == .gone ? 0 : 1)
         .allowsHitTesting(!hidden)
         .animation(.easeOut(duration: 0.2), value: edge)
         .onAppear(perform: arrive)
@@ -61,7 +69,9 @@ struct PeggedView: View {
 
     /// The photo fits inside the card area keeping its proportions, so the
     /// white border hugs it whether the screenshot is wide or tall.
-    static func photoSize(for size: CGSize) -> CGSize {
+    static func photoSize(for size: CGSize, note: Bool = false) -> CGSize {
+        // Notes are drawn at the size they are shown, already within bounds.
+        if note { return CGSize(width: min(size.width, Note.maxWidth), height: min(size.height, Note.maxHeight)) }
         let maxW = Layout.cardWidth - 14, maxH: CGFloat = 104
         guard size.width > 0, size.height > 0 else { return CGSize(width: maxW, height: maxH) }
         let scale = min(maxW / size.width, maxH / size.height)
@@ -69,15 +79,15 @@ struct PeggedView: View {
     }
 
     /// The card around the photo: the photo plus the glass inset.
-    static func cardSize(for size: CGSize) -> CGSize {
-        let p = photoSize(for: size)
+    static func cardSize(for size: CGSize, note: Bool = false) -> CGSize {
+        let p = photoSize(for: size, note: note)
         return CGSize(width: p.width + Frame.inset * 2, height: p.height + Frame.inset * 2)
     }
 
     /// Distance from the top of the hanging view (the clip) to the card.
     static let cardOffsetBelowTop: CGFloat = 26 - 12
 
-    private var photoSize: CGSize { Self.photoSize(for: item.thumb.size) }
+    private var photoSize: CGSize { Self.photoSize(for: item.thumb.size, note: item.isNote) }
 
     private var card: some View {
         Image(nsImage: item.thumb)

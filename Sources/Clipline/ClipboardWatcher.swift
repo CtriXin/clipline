@@ -261,75 +261,84 @@ enum Secrets {
     }
 }
 
+/// Text cards are sized to what they hold, within these bounds (points, as
+/// shown on the line): a code is a small tag, a paragraph a long note.
+enum Note {
+    static let minWidth: CGFloat = 96, maxWidth: CGFloat = Layout.cardWidth - 14
+    static let minHeight: CGFloat = 56, maxHeight: CGFloat = 170
+    static let pad: CGFloat = 6
+
+    static var isDark: Bool { NSApp?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua }
+
+    /// Draws `body` on a note just big enough for it, at the size it is shown.
+    static func draw(_ body: NSAttributedString, paper: NSColor) -> NSImage {
+        let inner = maxWidth - pad * 2
+        let oneLine = body.size().width
+        let width = oneLine < inner ? max(minWidth, ceil(oneLine) + pad * 2 + 2) : maxWidth
+        let needed = body.boundingRect(with: NSSize(width: width - pad * 2, height: .greatestFiniteMagnitude),
+                                       options: [.usesLineFragmentOrigin]).height
+        let height = min(maxHeight, max(minHeight, ceil(needed) + pad * 2))
+        let image = NSImage(size: NSSize(width: width, height: height))
+        image.lockFocus()
+        paper.setFill()
+        NSBezierPath(rect: NSRect(x: 0, y: 0, width: width, height: height)).fill()
+        // Short text sits in the middle of the smallest note, not at its top.
+        let used = min(ceil(needed), height - pad * 2)
+        let top = (height - pad * 2 - used) / 2
+        body.draw(with: NSRect(x: pad, y: pad + top, width: width - pad * 2, height: used),
+                  options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+        image.unlockFocus()
+        return image
+    }
+
+    static func paragraph() -> NSMutableParagraphStyle {
+        let p = NSMutableParagraphStyle()
+        p.lineBreakMode = .byWordWrapping
+        p.lineSpacing = 1.5
+        return p
+    }
+}
+
 /// A text clip drawn as a small note, so it can hang next to the photos.
 /// A single link shows its site big; secrets are masked.
 func makeTextCard(_ text: String, link: URL?, maxPixels: Int = 480) -> NSImage {
-    // Same proportions as the largest photo slot (136×104 pt), so the note
-    // fills it and the text is shown about 12 pt on the line.
-    let width = CGFloat(maxPixels), height = CGFloat(maxPixels) * 0.76
-    let scale = width / 480
-    let dark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    let dark = Note.isDark
     let paper = dark ? NSColor(calibratedRed: 0.20, green: 0.20, blue: 0.22, alpha: 1)
                      : NSColor(calibratedRed: 1.0, green: 0.98, blue: 0.9, alpha: 1)
     let ink = dark ? NSColor(calibratedWhite: 0.92, alpha: 1) : NSColor(calibratedWhite: 0.15, alpha: 1)
-    let faint = ink.withAlphaComponent(0.6)
-
-    let image = NSImage(size: NSSize(width: width, height: height))
-    image.lockFocus()
-    paper.setFill()
-    NSBezierPath(rect: NSRect(x: 0, y: 0, width: width, height: height)).fill()
-
-    let para = NSMutableParagraphStyle()
-    para.lineBreakMode = .byWordWrapping
-    para.lineSpacing = 4 * scale
-    let pad = 18 * scale
-    let box = NSRect(x: pad, y: pad, width: width - pad * 2, height: height - pad * 2)
+    let para = Note.paragraph()
     let body = NSMutableAttributedString()
-
     if let link, let host = link.host {
         let site = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
-        body.append(NSAttributedString(string: "🔗 " + site + "\n", attributes: [
-            .font: NSFont.systemFont(ofSize: 46 * scale, weight: .bold), .foregroundColor: ink, .paragraphStyle: para]))
+        body.append(NSAttributedString(string: "🔗 " + site, attributes: [
+            .font: NSFont.systemFont(ofSize: 13, weight: .bold), .foregroundColor: ink, .paragraphStyle: para]))
         let rest = Secrets.mask(String(link.absoluteString.dropFirst((link.scheme?.count ?? 0) + 3 + host.count))).0
-        body.append(NSAttributedString(string: rest, attributes: [
-            .font: NSFont.systemFont(ofSize: 30 * scale), .foregroundColor: faint, .paragraphStyle: para]))
+        if rest.count > 1 {
+            body.append(NSAttributedString(string: "\n" + rest, attributes: [
+                .font: NSFont.systemFont(ofSize: 9), .foregroundColor: ink.withAlphaComponent(0.6), .paragraphStyle: para]))
+        }
     } else {
         let (masked, hidden) = Secrets.mask(text.trimmingCharacters(in: .whitespacesAndNewlines))
-        let shown = masked.count > 160 ? String(masked.prefix(160)) + "…" : masked
+        let shown = masked.count > 400 ? String(masked.prefix(400)) + "…" : masked
         body.append(NSAttributedString(string: (hidden ? "🔒 " : "") + shown, attributes: [
-            .font: NSFont.systemFont(ofSize: 44 * scale, weight: .semibold), .foregroundColor: ink, .paragraphStyle: para]))
+            .font: NSFont.systemFont(ofSize: 12.5, weight: .semibold), .foregroundColor: ink, .paragraphStyle: para]))
     }
-    body.draw(with: box, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
-    image.unlockFocus()
-    return image
+    return Note.draw(body, paper: paper)
 }
 
 /// A pin drawn as a card for one of your own lines: its name on top, the
 /// value below, keys with only their ends showing.
 func makePinCard(title: String, value: String, locked: Bool, maxPixels: Int = 480) -> NSImage {
-    let width = CGFloat(maxPixels), height = CGFloat(maxPixels) * 0.76
-    let scale = width / 480
-    let dark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    let dark = Note.isDark
     let paper = dark ? NSColor(calibratedRed: 0.17, green: 0.20, blue: 0.24, alpha: 1)
                      : NSColor(calibratedRed: 0.92, green: 0.96, blue: 1.0, alpha: 1)
     let ink = dark ? NSColor(calibratedWhite: 0.94, alpha: 1) : NSColor(calibratedWhite: 0.12, alpha: 1)
-
-    let image = NSImage(size: NSSize(width: width, height: height))
-    image.lockFocus()
-    paper.setFill()
-    NSBezierPath(rect: NSRect(x: 0, y: 0, width: width, height: height)).fill()
-    let para = NSMutableParagraphStyle()
-    para.lineBreakMode = .byWordWrapping
-    para.lineSpacing = 3 * scale
+    let para = Note.paragraph()
     let body = NSMutableAttributedString(string: (locked ? "🔒 " : "") + title + "\n", attributes: [
-        .font: NSFont.systemFont(ofSize: 44 * scale, weight: .bold), .foregroundColor: ink, .paragraphStyle: para])
-    let v = value.count > 120 ? String(value.prefix(120)) + "…" : value
+        .font: NSFont.systemFont(ofSize: 12.5, weight: .bold), .foregroundColor: ink, .paragraphStyle: para])
+    let v = value.count > 300 ? String(value.prefix(300)) + "…" : value
     body.append(NSAttributedString(string: v, attributes: [
-        .font: NSFont.monospacedSystemFont(ofSize: 34 * scale, weight: .regular),
+        .font: NSFont.monospacedSystemFont(ofSize: 9.5, weight: .regular),
         .foregroundColor: ink.withAlphaComponent(0.7), .paragraphStyle: para]))
-    let pad = 18 * scale
-    body.draw(with: NSRect(x: pad, y: pad, width: width - pad * 2, height: height - pad * 2),
-              options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
-    image.unlockFocus()
-    return image
+    return Note.draw(body, paper: paper)
 }

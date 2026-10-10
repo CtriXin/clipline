@@ -15,6 +15,9 @@ struct Pegged: Identifiable, Equatable {
     /// Still flying in from where it was captured; the card waits hidden.
     var flying = false
 
+    /// Text, from the clipboard or one of your lines: sized to its content.
+    var isNote: Bool { url.scheme == "clipline-text" || url.scheme == "clipline-pin" }
+
     static func == (a: Pegged, b: Pegged) -> Bool {
         a.id == b.id && a.falling == b.falling && a.flying == b.flying && a.thumb === b.thumb
     }
