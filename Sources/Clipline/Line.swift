@@ -34,7 +34,12 @@ final class Line: ObservableObject {
     /// Which line is up: the recent one (screenshots and the clipboard) or
     /// one of your own groups. Switching swaps the whole line.
     @Published var shelf: Shelf = .recent {
-        didSet { if shelf != oldValue { scroll = 0; rebuildPins() } }
+        didSet {
+            guard shelf != oldValue else { return }
+            rebuildPins()
+            // Recent opens on its newest end; your own lines on their first card.
+            if shelf == .recent { scrollToNewest() } else { scroll = 0 }
+        }
     }
     /// The current group's pins, hung as cards.
     @Published private(set) var pinCards: [Pegged] = []
@@ -83,7 +88,10 @@ final class Line: ObservableObject {
     /// uses them to only catch clicks over photos and let the rest through.
     var hitRects: [UUID: CGRect] = [:]
 
+    /// How many cards fit on screen at once (set from the screen width).
     var maxItems = 8
+    /// How many Recent keeps. More than fit on screen: the line slides.
+    static let recentLimit = 24
 
 
     var soundOn: Bool {
@@ -153,6 +161,10 @@ final class Line: ObservableObject {
         if next != scroll { scroll = next }
     }
 
+    func scrollToNewest() {
+        scroll = Layout.maxScroll(count: items.filter { !$0.falling }.count, width: width)
+    }
+
     /// ← →: a screenful at a time, landing on a whole card.
     func page(_ direction: Int) {
         let perPage = max(1, Int(Layout.usable(width: width) / Layout.spacing))
@@ -202,16 +214,18 @@ final class Line: ObservableObject {
         // A full line lets the oldest card fall off the far end. Pictures
         // and text each keep half the line, so a burst of copied text cannot
         // push every screenshot off, nor the other way round.
-        while liveCount > maxItems {
+        while liveCount > Self.recentLimit {
             let live = items.filter { !$0.falling }
             let isText = Clips.isText(url)
             let same = live.filter { Clips.isText($0.url) == isText }
-            let victim = same.count > maxItems / 2 ? same.first
+            let victim = same.count > Self.recentLimit / 2 ? same.first
                 : live.first { Clips.isText($0.url) != isText }
             guard let victim else { break }
             drop(victim.id, quietly: true)
         }
         if !quietly { play("Tink", volume: 0.35) }
+        // The newest hangs at the right end: slide there so it is in view.
+        if shelf == .recent { scrollToNewest() }
         return item.id
     }
 
