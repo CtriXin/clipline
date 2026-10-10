@@ -59,3 +59,10 @@
 "Reset to ⌃⌥T" = "Volver a ⌃⌥T";
 "%@ is already used by another app" = "%@ ya lo usa otra app";
 "Keeping %@. Try a different combination." = "Se mantiene %@. Prueba otra combinación.";
+"Drop to hang it on the line" = "Suelta para tenderlo";
+"Tidy up Recent" = "Ordenar Recientes";
+"Back in the order things were hung" = "Vuelve al orden en que se tendieron";
+"Line speed" = "Velocidad del tendedero";
+"Fast" = "Rápida";
+"Normal" = "Normal";
+"Slow" = "Lenta";

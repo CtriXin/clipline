@@ -70,6 +70,44 @@ enum Clips {
     /// Set after the app writes to the pasteboard itself, so copying a card
     /// back does not hang it a second time.
     @MainActor static var ownChangeCount = -1
+
+    /// Keeps image data as a scratch file, gone again when it leaves the line.
+    static func save(_ data: Data, ext: String = "png") -> URL? {
+        let url = newURL(ext: ext)
+        do {
+            try data.write(to: url, options: .atomic)
+            return url
+        } catch {
+            log.error("Could not save clip: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
+    /// An image dropped on the line from anywhere: it hangs as a copy, so
+    /// taking it down never touches the original.
+    static func save(copyOf file: URL) -> URL? {
+        let url = newURL(ext: file.pathExtension.isEmpty ? "png" : file.pathExtension.lowercased())
+        do {
+            try FileManager.default.copyItem(at: file, to: url)
+            return url
+        } catch {
+            log.error("Could not copy dropped file: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
+    private static func newURL(ext: String) -> URL {
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let stamp = stampFormatter.string(from: Date())
+        return folder.appendingPathComponent("Clip \(stamp)-\(UUID().uuidString.prefix(4))")
+            .appendingPathExtension(ext)
+    }
+
+    private static let stampFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
+        return f
+    }()
 }
 
 /// Polls the general pasteboard. macOS has no notification for clipboard
@@ -134,7 +172,7 @@ final class ClipboardWatcher {
             let hash = SHA256.hash(data: png).map { String(format: "%02x", $0) }.joined()
             guard hash != lastImageHash else { return }
             lastImageHash = hash
-            if let url = write(png) { onNew(url) }
+            if let url = Clips.save(png) { onNew(url) }
             return
         }
 
@@ -163,27 +201,6 @@ final class ClipboardWatcher {
               let rep = NSBitmapImageRep(data: tiff) else { return nil }
         return rep.representation(using: .png, properties: [:])
     }
-
-    private func write(_ data: Data) -> URL? {
-        let fm = FileManager.default
-        try? fm.createDirectory(at: Clips.folder, withIntermediateDirectories: true)
-        let stamp = Self.stampFormatter.string(from: Date())
-        let url = Clips.folder.appendingPathComponent("Clip \(stamp)-\(UUID().uuidString.prefix(4))")
-            .appendingPathExtension("png")
-        do {
-            try data.write(to: url, options: .atomic)
-            return url
-        } catch {
-            log.error("Could not save clip: \(error.localizedDescription, privacy: .public)")
-            return nil
-        }
-    }
-
-    private static let stampFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
-        return f
-    }()
 }
 
 /// Hides the middle of anything that looks like a key, token or password,

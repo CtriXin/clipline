@@ -14,6 +14,8 @@ struct Pegged: Identifiable, Equatable {
     var falling = false
     /// Still flying in from where it was captured; the card waits hidden.
     var flying = false
+    /// When it was hung, so a line rearranged by hand can be put back in order.
+    let hungAt = Date()
 
     /// Text, from the clipboard or one of your lines: sized to its content.
     var isNote: Bool { url.scheme == "clipline-text" || url.scheme == "clipline-pin" }
@@ -54,6 +56,33 @@ final class Line: ObservableObject {
     @Published var showShortcuts = false
     /// The pointer is at the lowered line.
     @Published var pointerInside = false
+    /// Something from another app is being dragged over the line.
+    @Published var dropTargeted = false
+    /// How fast the line comes down and goes back up.
+    @Published var pace = Pace.saved {
+        didSet { UserDefaults.standard.set(pace.rawValue, forKey: Pace.key) }
+    }
+
+    enum Pace: String, CaseIterable {
+        case fast, normal, slow
+        static let key = "dropPace"
+        static var saved: Pace { Pace(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .normal }
+        /// Multiplies every duration of the line's slide.
+        var factor: Double {
+            switch self {
+            case .fast: return 0.6
+            case .normal: return 1
+            case .slow: return 1.8
+            }
+        }
+        var title: String {
+            switch self {
+            case .fast: return L("Fast")
+            case .normal: return L("Normal")
+            case .slow: return L("Slow")
+            }
+        }
+    }
     static let tabsID = UUID()
     static let moreLeftID = UUID()
     /// The pointer sweeping along the line, like a hand: where it is (in the
@@ -194,6 +223,37 @@ final class Line: ObservableObject {
         guard live.indices.contains(index) else { return false }
         copy(live[index].id)
         return true
+    }
+
+    // MARK: Rearranging by hand
+
+    /// Dragged along the rope: the card takes the place under the pointer
+    /// and the others make room. Your own lines remember it on `finishMove`.
+    func moveCard(_ id: UUID, to index: Int) {
+        if shelf == .recent {
+            items.move(id, to: index)
+        } else {
+            pinCards.move(id, to: index)
+        }
+    }
+
+    func finishMove() {
+        guard case .group(let g) = shelf else { return }
+        Bag.shared.reorder(g, ids: pinCards.compactMap { $0.url.host.flatMap(UUID.init(uuidString:)) })
+    }
+
+    /// Recent is in the order things were hung.
+    var isTidy: Bool {
+        let live = items.filter { !$0.falling }
+        return zip(live, live.dropFirst()).allSatisfy { $0.hungAt <= $1.hungAt }
+    }
+
+    /// Puts Recent back in the order things were hung, oldest first.
+    func tidy() {
+        items = items.enumerated()
+            .sorted { ($0.element.hungAt, $0.offset) < ($1.element.hungAt, $1.offset) }
+            .map(\.element)
+        if shelf == .recent { scrollToNewest() }
     }
 
     // MARK: Hanging and dropping
@@ -463,4 +523,13 @@ func makeThumbnail(_ url: URL, maxPixels: Int = 480) -> NSImage? {
     ]
     guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
     return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+}
+
+private extension Array where Element == Pegged {
+    mutating func move(_ id: UUID, to index: Int) {
+        guard let from = firstIndex(where: { $0.id == id }) else { return }
+        let to = Swift.min(Swift.max(index, 0), count - 1)
+        guard from != to else { return }
+        insert(remove(at: from), at: to)
+    }
 }

@@ -25,4 +25,15 @@ final class LayoutTests: XCTestCase {
         let last = Layout.x(index: count - 1, count: count, width: width, scroll: limit)
         XCTAssertFalse(Layout.isOffLine(x: last, width: width))
     }
+
+    func testIndexUnderPointerFollowsTheSlidLine() {
+        let count = 20, scroll = Layout.spacing * 3
+        for i in [0, 3, 7, 19] {
+            let x = Layout.x(index: i, count: count, width: width, scroll: scroll)
+            XCTAssertEqual(Layout.index(atX: x + 20, count: count, width: width, scroll: scroll), i)
+        }
+        // Past either end it clamps to the first and last place.
+        XCTAssertEqual(Layout.index(atX: -500, count: count, width: width, scroll: scroll), 0)
+        XCTAssertEqual(Layout.index(atX: 99_999, count: count, width: width, scroll: scroll), count - 1)
+    }
 }

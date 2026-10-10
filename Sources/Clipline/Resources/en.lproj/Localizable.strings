@@ -61,3 +61,10 @@
 "Reset to ⌃⌥T" = "Reset to ⌃⌥T";
 "%@ is already used by another app" = "%@ is already used by another app";
 "Keeping %@. Try a different combination." = "Keeping %@. Try a different combination.";
+"Drop to hang it on the line" = "Drop to hang it on the line";
+"Tidy up Recent" = "Tidy up Recent";
+"Back in the order things were hung" = "Back in the order things were hung";
+"Line speed" = "Line speed";
+"Fast" = "Fast";
+"Normal" = "Normal";
+"Slow" = "Slow";

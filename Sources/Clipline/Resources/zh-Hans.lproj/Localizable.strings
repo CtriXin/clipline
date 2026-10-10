@@ -59,3 +59,10 @@
 "Reset to ⌃⌥T" = "恢复为 ⌃⌥T";
 "%@ is already used by another app" = "%@ 已被其他 app 占用";
 "Keeping %@. Try a different combination." = "继续使用 %@，换个组合试试。";
+"Drop to hang it on the line" = "松手挂到绳上";
+"Tidy up Recent" = "整理「最近」";
+"Back in the order things were hung" = "恢复按挂上的时间排列";
+"Line speed" = "绳子下落速度";
+"Fast" = "快";
+"Normal" = "正常";
+"Slow" = "慢";

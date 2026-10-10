@@ -65,6 +65,15 @@ final class Bag: ObservableObject {
         save()
     }
 
+    /// A line rearranged by hand keeps its order.
+    func reorder(_ group: String, ids: [UUID]) {
+        let ordered = ids.compactMap { id in pins.first { $0.id == id && $0.group == group } }
+        guard ordered.count == pins(in: group).count else { return }
+        var next = ordered.makeIterator()
+        pins = pins.map { $0.group == group ? next.next()! : $0 }
+        save()
+    }
+
     func remove(_ id: UUID) {
         pins.removeAll { $0.id == id }
         save()

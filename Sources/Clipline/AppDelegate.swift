@@ -64,6 +64,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var lastLiveCount = 0
     /// The screen a new capture was taken on: the line goes there.
     private var pendingScreen: NSScreen?
+    /// The drag pasteboard's count while no button was down. A newer one
+    /// while the button is held means something is being dragged right now.
+    private var dragCountAtRest = NSPasteboard(name: .drag).changeCount
+    /// A slow watch, while there is no line at all, for something dragged
+    /// up to the menu bar: the line comes down to take it.
+    private var dragWatch: Timer?
+    /// Brought down only to take a drop; it goes again if nothing is left on it.
+    private var summonedForDrop = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Clips.wipe()
@@ -89,6 +97,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if Clips.isEnabled { clipWatcher?.start() }
 
         registerSummon(Shortcut.saved)
+        updateDragWatch()
 
         setUpStatusItem()
         watchMenuBarClicks()
@@ -510,6 +519,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // The cursor is watched while there is a line, even tucked away,
         // to notice it pushing against the top edge.
         if wanted { startMouseTracking() } else { stopMouseTracking() }
+        updateDragWatch()
+    }
+
+    // MARK: Dropping onto the line from other apps
+
+    /// Whether something from another app is being dragged right now.
+    private func isDraggingIn() -> Bool {
+        let count = NSPasteboard(name: .drag).changeCount
+        guard NSEvent.pressedMouseButtons & 1 != 0 else {
+            dragCountAtRest = count
+            return false
+        }
+        return count != dragCountAtRest && !GrabView.isDragging
+    }
+
+    private func updateDragWatch() {
+        if wanted {
+            dragWatch?.invalidate()
+            dragWatch = nil
+            return
+        }
+        guard dragWatch == nil else { return }
+        let t = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.watchForDrag() }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        dragWatch = t
+    }
+
+    /// With no line up at all, dragging something into the menu bar brings
+    /// one down to drop it on.
+    private func watchForDrag() {
+        guard !wanted, isDraggingIn() else { return }
+        let mouse = NSEvent.mouseLocation
+        guard let screen = NSScreen.screens.first(where: { NSMouseInRect(mouse, Self.menuBarBand(of: $0), false) }),
+              !FullScreen.isActive(on: screen) else { return }
+        summonedForDrop = true
+        wanted = true
+        panel.placeOnScreen(screen)
+        updateCapacity()
+        refresh()
+        reveal()
     }
 
     /// macOS sometimes parks the window on another Space and the app never
@@ -565,7 +616,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if on {
             if isPresent { panel.orderFrontRegardless() }
         } else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3 * line.pace.factor) { [weak self] in
                 guard let self, !self.isRevealed else { return }
                 self.panel.orderOut(nil)
             }
@@ -574,6 +625,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             pinned = false
             peekUntil = .distantPast
             panel.ignoresMouseEvents = true
+            line.dropTargeted = false
+            if summonedForDrop {
+                summonedForDrop = false
+                // Nothing was dropped after all: back to no line.
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.line.liveCount == 0, !self.keepOpen, Bag.shared.pins.isEmpty else { return }
+                    self.wanted = false
+                    self.refresh()
+                }
+            }
         }
     }
 
@@ -754,6 +815,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// whatever is underneath.
     private func updateMousePassThrough(_ mouse: NSPoint) {
         guard !GrabView.isDragging else { return }
+        // Something dragged in from another app: the whole line takes it.
+        if isDraggingIn() {
+            if panel.ignoresMouseEvents { panel.ignoresMouseEvents = false }
+            return
+        }
         let local = panel.convertPoint(fromScreen: mouse)
         let flipped = CGPoint(x: local.x, y: panel.frame.height - local.y)
         let overPhoto = line.hitRects.values.contains { $0.insetBy(dx: -4, dy: -4).contains(flipped) }
@@ -797,6 +863,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         clearItem.isEnabled = line.liveCount > 0
         menu.addItem(clearItem)
 
+        let tidyItem = ClosureMenuItem(L("Tidy up Recent")) { [weak self] in
+            self?.line.tidy()
+        }
+        tidyItem.toolTip = L("Back in the order things were hung")
+        tidyItem.isEnabled = !line.isTidy
+        menu.addItem(tidyItem)
+
         let inbox = ClosureMenuItem(L("Handle screenshots")) { [weak self] in
             self?.setInbox(!Inbox.isEnabled)
         }
@@ -821,6 +894,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(ClosureMenuItem(String(format: L("Shortcut: %@…"), Shortcut.saved.display)) { [weak self] in
             self?.changeSummon()
         })
+
+        let paceItem = NSMenuItem(title: L("Line speed"), action: nil, keyEquivalent: "")
+        let paces = NSMenu()
+        for pace in Line.Pace.allCases {
+            let item = ClosureMenuItem(pace.title) { [weak self] in self?.line.pace = pace }
+            item.state = line.pace == pace ? .on : .off
+            paces.addItem(item)
+        }
+        paceItem.submenu = paces
+        menu.addItem(paceItem)
 
         let sound = ClosureMenuItem(L("Sounds")) { [weak self] in
             guard let self else { return }

@@ -38,6 +38,14 @@ enum Layout {
         return tabsReserve + cardWidth / 2 + CGFloat(index) * spacing - scroll
     }
 
+    /// The place along the line under a point, for a card dragged along it.
+    static func index(atX px: CGFloat, count: Int, width: CGFloat, scroll: CGFloat = 0) -> Int {
+        guard count > 0 else { return 0 }
+        let first = x(index: 0, count: count, width: width, scroll: scroll)
+        let i = Int(((px - first) / spacing).rounded())
+        return min(max(i, 0), count - 1)
+    }
+
     /// A card slid past either end of the usable stretch is put away.
     static func isOffLine(x: CGFloat, width: CGFloat) -> Bool {
         x < tabsReserve + cardWidth / 2 - 2 || x > width - tabsReserve - cardWidth / 2 + 2
@@ -64,10 +72,21 @@ struct LineView: View {
         GeometryReader { geo in
             let width = geo.size.width
             ZStack(alignment: .topLeading) {
-                Rope(width: width, tint: line.shelf.tint)
-                    .animation(.easeInOut(duration: 0.25), value: line.shelf)
+                // Under everything: the whole strip takes drops. It only gets
+                // the mouse while something is being dragged over it.
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onDrop(of: LineDrop.types, delegate: LineDrop(line: line, width: width))
 
-                if line.visible.isEmpty {
+                Rope(width: width, tint: line.dropTargeted ? .accentColor : line.shelf.tint)
+                    .animation(.easeInOut(duration: 0.25), value: line.shelf)
+                    .animation(.easeInOut(duration: 0.2), value: line.dropTargeted)
+
+                if line.dropTargeted {
+                    DropHint()
+                        .position(x: width / 2, y: Layout.ropeY(x: width / 2, width: width) + 34)
+                        .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                } else if line.visible.isEmpty {
                     Hint(shelf: line.shelf)
                         .position(x: width / 2, y: Layout.ropeY(x: width / 2, width: width) + 34)
                         .transition(.opacity)
@@ -108,11 +127,12 @@ struct LineView: View {
             .animation(.spring(response: 0.55, dampingFraction: 0.78), value: line.visible.map(\.id))
             .animation(.interactiveSpring(response: 0.3, dampingFraction: 0.86), value: line.scroll)
             .animation(.easeInOut(duration: 0.3), value: line.visible.isEmpty)
+            .animation(.easeOut(duration: 0.18), value: line.dropTargeted)
             // Tucked away, the whole line waits above the top edge and slides
             // out from under the menu bar, the way an auto-hiding Dock does.
             .offset(y: line.revealed ? 0 : -(Layout.panelHeight + 12))
-            .animation(line.revealed ? .spring(response: 0.42, dampingFraction: 0.82)
-                                     : .easeIn(duration: 0.22), value: line.revealed)
+            .animation(line.revealed ? .spring(response: 0.42 * line.pace.factor, dampingFraction: 0.82)
+                                     : .easeIn(duration: 0.22 * line.pace.factor), value: line.revealed)
         }
         .onPreferenceChange(HitRectsKey.self) { rects in
             line.hitRects = rects
@@ -254,6 +274,20 @@ extension Line.Shelf {
         case .group(Bag.secretGroup): return .orange
         case .group: return .accentColor
         }
+    }
+}
+
+/// Shown while something from another app is dragged over the line.
+private struct DropHint: View {
+    var body: some View {
+        Label(L("Drop to hang it on the line"), systemImage: "arrow.down.to.line")
+            .font(.system(size: 12, weight: .semibold, design: .rounded))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Color.accentColor, in: Capsule())
+            .shadow(color: .black.opacity(0.2), radius: 6, y: 2)
+            .allowsHitTesting(false)
     }
 }
 
