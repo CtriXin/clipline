@@ -2,7 +2,7 @@ import AppKit
 import Combine
 import os
 
-let log = Logger(subsystem: "app.tendedero.Tendedero", category: "line")
+let log = Logger(subsystem: "local.clipline.Clipline", category: "line")
 
 /// One screenshot hanging on the line.
 struct Pegged: Identifiable, Equatable {
@@ -29,6 +29,8 @@ final class Line: ObservableObject {
     @Published var copiedID: UUID?
     @Published var draggingID: UUID?
     @Published var pressedID: UUID?
+    /// The card under the pointer, for the large preview.
+    @Published var hoveredID: UUID?
     /// Whether the line has slid down into view.
     @Published var revealed = false
 
@@ -55,18 +57,38 @@ final class Line: ObservableObject {
 
     // MARK: Hanging and dropping
 
+    /// Whether the last thing hung should bring the line down to show itself.
+    /// Screenshots do; clipboard copies hang quietly, there are far too many.
+    private(set) var lastHangPeeks = true
+
     @discardableResult
-    func hang(_ url: URL, quietly: Bool = false, flying: Bool = false) -> UUID? {
+    func hang(_ url: URL, quietly: Bool = false, flying: Bool = false, peek: Bool = true) -> UUID? {
         guard !items.contains(where: { $0.url == url && !$0.falling }),
-              let thumb = makeThumbnail(url) else { return nil }
+              let thumb = makeThumbnail(url) else {
+            Clips.forget(url)
+            return nil
+        }
+        // The same text copied again moves to the newest end, not a second card.
+        if let text = Clips.text(of: url),
+           let old = items.first(where: { !$0.falling && Clips.text(of: $0.url) == text }) {
+            drop(old.id, quietly: true)
+        }
         var item = Pegged(url: url, thumb: thumb)
         item.flying = flying
+        lastHangPeeks = peek
         items.append(item)
-        // A full line lets the oldest photo fall off the far end.
-        while liveCount > maxItems, let oldest = items.first(where: { !$0.falling }) {
-            drop(oldest.id, quietly: true)
+        // A full line lets the oldest card fall off the far end. Screenshots
+        // and clips each keep half the line, so a burst of copies cannot
+        // push every screenshot off, nor the other way round.
+        while liveCount > maxItems {
+            let live = items.filter { !$0.falling }
+            let isClip = Clips.contains(url)
+            let same = live.filter { Clips.contains($0.url) == isClip }
+            let victim = same.count > maxItems / 2 ? same.first
+                : live.first { Clips.contains($0.url) != isClip }
+            guard let victim else { break }
+            drop(victim.id, quietly: true)
         }
-        save()
         if !quietly { play("Tink", volume: 0.35) }
         return item.id
     }
@@ -86,10 +108,12 @@ final class Line: ObservableObject {
         onFall?(items[i])
         items[i].falling = true
         hitRects[id] = nil
-        save()
         if !quietly { play("Pop", volume: 0.25) }
+        let url = items[i].url
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
             self?.items.removeAll { $0.id == id }
+            // A clip only lives while it hangs.
+            Clips.forget(url)
         }
     }
 
@@ -104,7 +128,8 @@ final class Line: ObservableObject {
 
     /// Photos whose file was deleted or moved away fall off by themselves.
     func prune() {
-        for item in items where !item.falling && !FileManager.default.fileExists(atPath: item.url.path) {
+        for item in items where !item.falling && item.url.isFileURL
+            && !FileManager.default.fileExists(atPath: item.url.path) {
             drop(item.id, quietly: true)
         }
     }
@@ -113,12 +138,17 @@ final class Line: ObservableObject {
 
     func copy(_ id: UUID) {
         guard let item = items.first(where: { $0.id == id }) else { return }
-        let entry = NSPasteboardItem()
-        if let png = pngData(item.url) { entry.setData(png, forType: .png) }
-        entry.setString(item.url.absoluteString, forType: .fileURL)
         let pb = NSPasteboard.general
         pb.clearContents()
-        pb.writeObjects([entry])
+        if Clips.isText(item.url) {
+            pb.setString(Clips.text(of: item.url) ?? "", forType: .string)
+        } else {
+            let entry = NSPasteboardItem()
+            if let png = pngData(item.url) { entry.setData(png, forType: .png) }
+            entry.setString(item.url.absoluteString, forType: .fileURL)
+            pb.writeObjects([entry])
+        }
+        Clips.ownChangeCount = pb.changeCount
 
         copiedID = id
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
@@ -128,6 +158,10 @@ final class Line: ObservableObject {
 
     func open(_ id: UUID) {
         guard let item = items.first(where: { $0.id == id }) else { return }
+        if Clips.isText(item.url) {
+            if let link = Clips.link(of: item.url) { NSWorkspace.shared.open(link) }
+            return
+        }
         NSWorkspace.shared.open(item.url)
     }
 
@@ -136,6 +170,8 @@ final class Line: ObservableObject {
     /// is the source app's job, as Finder does.
     func trash(_ id: UUID) {
         guard let item = items.first(where: { $0.id == id }) else { return }
+        // Clips are scratch: taking one down already deletes it.
+        if Clips.contains(item.url) { return drop(id) }
         do {
             try FileManager.default.trashItem(at: item.url, resultingItemURL: nil)
             log.notice("Trashed \(item.url.lastPathComponent, privacy: .public)")
@@ -151,7 +187,7 @@ final class Line: ObservableObject {
         contentsOfFile: "/System/Library/Components/CoreAudio.component/Contents/SharedSupport/SystemSounds/dock/drag to trash.aif",
         byReference: true)
 
-    /// Whether the file lives in Tendedero's own folder. Those are discarded
+    /// Whether the file lives in Clipline's own folder. Those are discarded
     /// to the Trash, or the folder would fill up with forgotten screenshots.
     /// Files anywhere else, like the Desktop, stay where they are.
     func isInInbox(_ id: UUID) -> Bool {
@@ -193,6 +229,7 @@ final class Line: ObservableObject {
     /// Long press: open the photo in the system Markup editor.
     func markup(_ id: UUID) {
         guard let item = items.first(where: { $0.id == id }) else { return }
+        if Clips.isText(item.url) { return }
         Markup.shared.edit(item.url)
     }
 
@@ -204,7 +241,7 @@ final class Line: ObservableObject {
     }
 
     func reveal(_ id: UUID) {
-        guard let item = items.first(where: { $0.id == id }) else { return }
+        guard let item = items.first(where: { $0.id == id }), item.url.isFileURL else { return }
         NSWorkspace.shared.activateFileViewerSelecting([item.url])
     }
 
@@ -222,16 +259,10 @@ final class Line: ObservableObject {
 
     // MARK: Persistence
 
-    private func save() {
-        let paths = items.filter { !$0.falling }.map(\.url.path)
-        UserDefaults.standard.set(paths, forKey: storeKey)
-    }
-
+    /// Nothing comes back after a restart: the line is scratch space. Only the
+    /// list kept by earlier versions is cleared; the files themselves stay.
     private func restore() {
-        let paths = UserDefaults.standard.stringArray(forKey: storeKey) ?? []
-        for path in paths where FileManager.default.fileExists(atPath: path) {
-            hang(URL(fileURLWithPath: path), quietly: true)
-        }
+        UserDefaults.standard.removeObject(forKey: storeKey)
     }
 
     // MARK: Helpers
@@ -251,6 +282,10 @@ final class Line: ObservableObject {
 }
 
 func makeThumbnail(_ url: URL, maxPixels: Int = 480) -> NSImage? {
+    if Clips.isText(url) {
+        guard let text = Clips.text(of: url) else { return nil }
+        return makeTextCard(text, link: Clips.link(of: url), maxPixels: maxPixels)
+    }
     guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
     let options: [CFString: Any] = [
         kCGImageSourceCreateThumbnailFromImageAlways: true,

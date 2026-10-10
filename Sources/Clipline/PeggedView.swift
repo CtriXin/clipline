@@ -100,7 +100,11 @@ struct PeggedView: View {
             }
             .animation(.easeOut(duration: 0.18), value: hovering)
             .animation(.easeOut(duration: 0.2), value: copied)
-            .onHover { hovering = $0 }
+            .onHover { inside in
+                hovering = inside
+                if inside { line.hoveredID = item.id }
+                else if line.hoveredID == item.id { line.hoveredID = nil }
+            }
             .background(
                 GeometryReader { g in
                     Color.clear.preference(key: HitRectsKey.self,

@@ -41,9 +41,19 @@ struct GrabArea: NSViewRepresentable {
         view.onDiscard = { line.discard(id) }
         view.onLongPress = { line.markup(id) }
         view.onPressChange = { pressed in line.pressedID = pressed ? id : nil }
+        let url = item.url
         view.menuProvider = {
             let menu = NSMenu()
             menu.addItem(ClosureMenuItem(L("Copy")) { line.copy(id) })
+            // Text lives only in memory: there is no file to open or show.
+            if Clips.isText(url) {
+                if Clips.link(of: url) != nil {
+                    menu.addItem(ClosureMenuItem(L("Open link")) { line.open(id) })
+                }
+                menu.addItem(.separator())
+                menu.addItem(ClosureMenuItem(L("Take down")) { line.discard(id) })
+                return menu
+            }
             menu.addItem(ClosureMenuItem(L("Open")) { line.open(id) })
             menu.addItem(ClosureMenuItem(L("Markup")) { line.markup(id) })
             menu.addItem(ClosureMenuItem(L("Show in Finder")) { line.reveal(id) })
@@ -139,7 +149,10 @@ final class GrabView: NSView, NSDraggingSource {
         startedDrag = true
         endPress()
 
-        let item = NSDraggingItem(pasteboardWriter: url as NSURL)
+        // A text clip drags as its text, so it drops into any text field.
+        let writer: NSPasteboardWriting = Clips.isText(url)
+            ? (Clips.text(of: url) ?? "") as NSString : url as NSURL
+        let item = NSDraggingItem(pasteboardWriter: writer)
         item.setDraggingFrame(imageFrame(), contents: dragImage)
         let session = beginDraggingSession(with: [item], event: event, source: self)
         // Released where nothing accepts it: it flies back to the line.

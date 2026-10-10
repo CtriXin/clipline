@@ -14,6 +14,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// ignores the screenshot settings (macOS 27 renamed one), captures keep
     /// landing on the Desktop, and they still hang on the line.
     private var safetyWatcher: ScreenshotWatcher?
+    private var clipWatcher: ClipboardWatcher?
+    private let preview = HoverPreview()
+    private var previewWork: DispatchWorkItem?
     private var signalSources: [DispatchSourceSignal] = []
     private var hotKey: HotKey?
     private var cancellables = Set<AnyCancellable>()
@@ -45,6 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var pendingScreen: NSScreen?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        Clips.wipe()
         let host = NSHostingView(rootView: LineView(line: line))
         host.sizingOptions = []
         panel = LinePanel(content: host)
@@ -54,6 +58,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if Inbox.isEnabled { Inbox.apply() }
         restoreSettingsOnTermination()
         startWatcher()
+        clipWatcher = ClipboardWatcher { [weak self] url in
+            self?.line.hang(url, quietly: true, peek: false)
+        }
+        if Clips.isEnabled { clipWatcher?.start() }
 
         hotKey = HotKey(keyCode: kVK_ANSI_T, modifiers: controlKey | optionKey) { [weak self] in
             self?.toggle()
@@ -64,6 +72,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         Markup.shared.onSaved = { [weak self] url in self?.line.reloadThumbnail(for: url) }
         line.onFall = { [weak self] item in self?.fall(item) }
+
+        Publishers.CombineLatest3(line.$hoveredID, line.$draggingID, line.$pressedID)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] hovered, dragging, pressed in
+                self?.updatePreview(hovered: dragging == nil && pressed == nil ? hovered : nil)
+            }
+            .store(in: &cancellables)
 
         line.$items
             .receive(on: RunLoop.main)
@@ -112,6 +127,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         if Inbox.isEnabled { Inbox.restore() }
+        Clips.wipe()
     }
 
     // MARK: Inbox mode
@@ -147,12 +163,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func offerInbox() {
         Inbox.wasOffered = true
         let alert = NSAlert()
-        alert.messageText = L("Let Tendedero handle your screenshots?")
+        alert.messageText = L("Let Clipline handle your screenshots?")
         alert.informativeText = L(
-            "Screenshots will hang on the line the instant you take them, without the floating thumbnail, and will not pile up on your Desktop. Drag one to a folder to keep it, or discard it with the cross. You can turn this off from the menu bar, and your settings come back when Tendedero quits.")
+            "Screenshots will hang on the line the instant you take them, without the floating thumbnail, and will not pile up on your Desktop. Drag one to a folder to keep it, or discard it with the cross. You can turn this off from the menu bar, and your settings come back when Clipline quits.")
         alert.addButton(withTitle: L("Turn on"))
         alert.addButton(withTitle: L("Not now"))
-        if let icon = NSImage(named: "Tendedero") ?? NSApp.applicationIconImage { alert.icon = icon }
+        if let icon = NSImage(named: "Clipline") ?? NSApp.applicationIconImage { alert.icon = icon }
         NSApp.activate(ignoringOtherApps: true)
         if alert.runModal() == .alertFirstButtonReturn { setInbox(true) }
     }
@@ -165,6 +181,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
             source.setEventHandler {
                 if Inbox.isEnabled { Inbox.restore() }
+                Clips.wipe()
                 exit(0)
             }
             source.resume()
@@ -176,7 +193,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func itemsChanged() {
         let live = line.liveCount
-        if live > lastLiveCount {
+        if live > lastLiveCount && !line.lastHangPeeks {
+            // A clip: it hangs quietly. Shown already, the line just grows.
+            updateCapacity()
+        } else if live > lastLiveCount {
             panel.placeOnScreen(pendingScreen)
             pendingScreen = nil
             updateCapacity()
@@ -226,6 +246,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         CaptureFlight.fly(image: image, from: from, to: to, tilt: CGFloat(item.tilt), on: screen) { [weak self] in
             self?.line.land(id)
         }
+    }
+
+    /// Resting on a card for a moment shows it large below the line.
+    private func updatePreview(hovered id: UUID?) {
+        previewWork?.cancel()
+        guard let id else { preview.hide(); return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.isRevealed, let screen = self.panel.screen,
+                  self.line.hoveredID == id, self.line.draggingID == nil,
+                  let item = self.line.items.first(where: { $0.id == id && !$0.falling }),
+                  let card = self.cardFrame(for: id) else { return }
+            self.preview.show(item.url, below: card, on: screen)
+        }
+        previewWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
     }
 
     /// A discarded card falls over the whole screen, from where it hangs.
@@ -447,7 +482,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func setUpStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        let image = NSImage(systemSymbolName: "tshirt", accessibilityDescription: "Tendedero")
+        let image = NSImage(systemSymbolName: "tshirt", accessibilityDescription: "Clipline")
         image?.isTemplate = true
         statusItem.button?.image = image
         let menu = NSMenu()
@@ -478,6 +513,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         inbox.toolTip = L("Screenshots hang instantly and skip the Desktop")
         menu.addItem(inbox)
 
+        let clip = ClosureMenuItem(L("Hang clipboard")) { [weak self] in
+            Clips.isEnabled.toggle()
+            if Clips.isEnabled { self?.clipWatcher?.start() } else { self?.clipWatcher?.stop() }
+        }
+        clip.state = Clips.isEnabled ? .on : .off
+        menu.addItem(clip)
+
         menu.addItem(ClosureMenuItem(L("Open screenshots folder")) { [weak self] in
             guard let self else { return }
             NSWorkspace.shared.open(self.watcher.folder)
@@ -499,7 +541,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(login)
 
         menu.addItem(.separator())
-        menu.addItem(ClosureMenuItem(L("Quit Tendedero"), key: "q") {
+        menu.addItem(ClosureMenuItem(L("Quit Clipline"), key: "q") {
             NSApp.terminate(nil)
         })
     }
@@ -514,7 +556,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } catch {
             let alert = NSAlert()
             alert.messageText = L("Could not change the login setting")
-            alert.informativeText = L("Move Tendedero to the Applications folder and try again.")
+            alert.informativeText = L("Move Clipline to the Applications folder and try again.")
             NSApp.activate(ignoringOtherApps: true)
             alert.runModal()
         }
