@@ -84,16 +84,19 @@ struct LineView: View {
                 // Tags at the ends that have more, saying how many.
                 let live = line.visible.filter { !$0.falling }.count
                 let limit = Layout.maxScroll(count: live, width: width)
-                if limit > 0 {
+                // Only while you are at the line, or driving it from the keyboard.
+                if limit > 0 && (line.pointerInside || line.keyboardMode) {
                     let shown = Int(Layout.usable(width: width) / Layout.spacing)
                     let before = line.firstShown
                     let after = max(0, live - before - max(1, shown))
                     if line.scroll > 1 {
                         MoreTag(count: before, leading: true) { line.page(-1) }
+                            .transition(.opacity)
                             .position(x: Layout.tabsReserve - 6, y: Layout.panelHeight - 34)
                     }
                     if line.scroll < limit - 1 {
                         MoreTag(count: after, leading: false) { line.page(1) }
+                            .transition(.opacity)
                             .position(x: width - Layout.tabsReserve + 6, y: Layout.panelHeight - 34)
                     }
                 }
@@ -206,16 +209,17 @@ private struct MoreTag: View {
     let action: () -> Void
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 3) {
+            // Plain and light, so it does not read as a key badge.
+            HStack(spacing: 2) {
                 if leading { Image(systemName: "chevron.left") }
-                if count > 0 { Text("\(count)") }
+                if count > 0 { Text(leading ? "\(count)+" : "+\(count)") }
                 if !leading { Image(systemName: "chevron.right") }
             }
-            .font(.system(size: 11, weight: .bold, design: .rounded))
-            .foregroundStyle(.primary.opacity(0.8))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .glassFrame(capsule: true)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(Color.primary.opacity(0.06), in: Capsule())
         }
         .buttonStyle(.plain)
         .background(

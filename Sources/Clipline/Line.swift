@@ -52,6 +52,8 @@ final class Line: ObservableObject {
     @Published var keyboardMode = false
     /// ⌘ held over the lowered line: the cards show their ⌘ numbers.
     @Published var showShortcuts = false
+    /// The pointer is at the lowered line.
+    @Published var pointerInside = false
     static let tabsID = UUID()
     static let moreLeftID = UUID()
     /// The pointer sweeping along the line, like a hand: where it is (in the

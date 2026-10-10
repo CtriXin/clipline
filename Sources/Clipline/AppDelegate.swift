@@ -553,6 +553,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         line.revealed = on
         if !on {
             calmWind()
+            line.pointerInside = false
             updateCommandHold(inside: false)
             stopKeyboardMode()
             // Next time it comes down on its own, it shows what is new.
@@ -728,6 +729,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var zone = panel.frame
         if let screen = panel.screen { zone.size.height = screen.frame.maxY - zone.minY }
         let inside = NSMouseInRect(mouse, zone, false)
+        if line.pointerInside != inside { line.pointerInside = inside }
         updateCommandHold(inside: inside)
         // Option held shows keys in full, on the cards and in the preview.
         let option = NSEvent.modifierFlags.contains(.option)
