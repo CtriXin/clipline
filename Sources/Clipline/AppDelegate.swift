@@ -24,7 +24,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var previewHotKey: HotKey?
     /// ⌘1–9, Tab, Esc: registered only while the line is up from the
     /// keyboard, so they are never taken from other apps otherwise.
-    private var keyboardKeys: [HotKey] = []
+    /// While the line has the keyboard: its key handler, and a watch for
+    /// clicks elsewhere, which put it away.
+    private var keyMonitor: Any?
+    private var outsideClickMonitor: Any?
     /// ⌘1–9 alone, while ⌘ is held over the line brought down by the mouse.
     private var digitKeys: [HotKey] = []
     /// The pointer a tick ago, to tell how fast it sweeps across the line.
@@ -366,13 +369,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// walks to the next line, like Tab.
     private func startKeyboardMode() {
         line.keyboardMode = true
-        guard keyboardKeys.isEmpty else { return }
-        keyboardKeys.append(contentsOf: makeDigitKeys())
-        keyboardKeys.append(HotKey(keyCode: kVK_Tab, modifiers: 0) { [weak self] in self?.line.nextShelf() })
-        keyboardKeys.append(HotKey(keyCode: kVK_Tab, modifiers: shiftKey) { [weak self] in self?.line.nextShelf(-1) })
-        keyboardKeys.append(HotKey(keyCode: kVK_Escape, modifiers: 0) { [weak self] in self?.tuckAway() })
-        keyboardKeys.append(HotKey(keyCode: kVK_RightArrow, modifiers: 0) { [weak self] in self?.line.page(1) })
-        keyboardKeys.append(HotKey(keyCode: kVK_LeftArrow, modifiers: 0) { [weak self] in self?.line.page(-1) })
+        panel.takesKeys = true
+        panel.makeKeyAndOrderFront(nil)
+        guard keyMonitor == nil else { return }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, self.line.keyboardMode, event.window === self.panel else { return event }
+            self.handleKey(event)
+            return nil   // everything typed goes to the line, nothing leaks out
+        }
+        outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            MainActor.assumeIsolated { self?.tuckAway() }
+        }
+    }
+
+    /// The keys while the line has the keyboard.
+    private func handleKey(_ event: NSEvent) {
+        let digits: [Int: Int] = [kVK_ANSI_1: 0, kVK_ANSI_2: 1, kVK_ANSI_3: 2, kVK_ANSI_4: 3, kVK_ANSI_5: 4,
+                                  kVK_ANSI_6: 5, kVK_ANSI_7: 6, kVK_ANSI_8: 7, kVK_ANSI_9: 8]
+        let code = Int(event.keyCode)
+        if let n = digits[code] {
+            guard line.copy(at: n) else { NSSound.beep(); return }
+            // Copied: out of the way, keys back to where you were, ready to paste.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in self?.tuckAway() }
+            return
+        }
+        switch code {
+        case kVK_Tab: line.nextShelf(event.modifierFlags.contains(.shift) ? -1 : 1)
+        case kVK_RightArrow: line.page(1)
+        case kVK_LeftArrow: line.page(-1)
+        case kVK_Escape: tuckAway()
+        default: break
+        }
     }
 
     /// ⌘1–9: copy the card shown in that place, then get out of the way so
@@ -403,7 +430,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func stopKeyboardMode() {
-        keyboardKeys.removeAll()
+        if let m = keyMonitor { NSEvent.removeMonitor(m) }
+        if let m = outsideClickMonitor { NSEvent.removeMonitor(m) }
+        keyMonitor = nil
+        outsideClickMonitor = nil
+        panel.takesKeys = false
+        if panel.isKeyWindow { panel.resignKey() }
         line.keyboardMode = false
         line.revealSecrets = false
     }

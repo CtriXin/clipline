@@ -115,19 +115,24 @@ struct PeggedView: View {
                     .scaleEffect(hovering ? 1 : 0.6)
                     .allowsHitTesting(false)
             }
-            .overlay(alignment: .bottomLeading) {
-                // From the keyboard, each card shows the ⌘ number that copies it.
+            .overlay(alignment: .topTrailing) {
+                // The number that copies this card: plain digits from the
+                // keyboard, ⌘ + digit while ⌘ is held over the line.
                 if line.keyboardMode || line.showShortcuts, let n = shortcutNumber {
-                    Text("⌘\(n)")
-                        .font(.system(size: 10, weight: .bold, design: .rounded))
-                        .foregroundStyle(.primary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .glassFrame(capsule: true)
-                        .padding(4)
+                    Text(line.keyboardMode ? "\(n)" : "⌘\(n)")
+                        .font(.system(size: 14, weight: .heavy, design: .rounded))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 7)
+                        .frame(minWidth: 26, minHeight: 26)
+                        .background(Color.black.opacity(0.82), in: Capsule())
+                        .overlay(Capsule().strokeBorder(Color.white.opacity(0.35), lineWidth: 1))
+                        .shadow(color: .black.opacity(0.35), radius: 4, y: 2)
+                        .offset(x: 8, y: -8)
+                        .transition(.scale(scale: 0.4).combined(with: .opacity))
                         .allowsHitTesting(false)
                 }
             }
+            .animation(.spring(response: 0.25, dampingFraction: 0.6), value: line.keyboardMode || line.showShortcuts)
             .overlay(GrabArea(item: item, line: line))
             .overlay(alignment: .bottom) {
                 if copied {

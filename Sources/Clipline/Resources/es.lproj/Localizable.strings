@@ -47,7 +47,7 @@
 "Hang on" = "Colgar en";
 "Take off this line" = "Quitar de esta cuerda";
 "Empty line: right-click a card on Recent › Hang on" = "Cuerda vacía: clic derecho en una tarjeta de Recientes › Colgar en";
-"⇥ switch line · ⌘1–9 copy · hold ⌥ show keys · esc" = "⇥ cambiar · ← → deslizar · ⌘1–9 copiar · ⌥ ver claves · esc";
+"⇥ switch line · ⌘1–9 copy · hold ⌥ show keys · esc" = "⇥ cambiar · ← → deslizar · 1–9 copiar · ⌥ ver claves · esc";
 "What is this? (site, account or use)" = "¿Qué es? (sitio, cuenta o uso)";
 "Take “%@” off “%@”?" = "¿Quitar «%@» de «%@»?";
 "It is deleted from the Keychain and cannot be brought back." = "Se borra del llavero y no se puede recuperar.";

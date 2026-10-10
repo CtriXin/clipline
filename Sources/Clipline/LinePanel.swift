@@ -21,7 +21,11 @@ final class LinePanel: NSPanel {
         contentView = content
     }
 
-    override var canBecomeKey: Bool { false }
+    /// Brought down from the keyboard, the line takes the keys, the way
+    /// Spotlight does: as a non-activating panel, the app you were in stays
+    /// in front and gets the keys back when the line goes.
+    var takesKeys = false
+    override var canBecomeKey: Bool { takesKeys }
     override var canBecomeMain: Bool { false }
 
     /// The line hangs on the screen you are using, which is the one with the
