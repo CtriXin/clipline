@@ -11,6 +11,10 @@ struct PeggedView: View {
     @State private var hovering = false
 
     private var copied: Bool { line.copiedID == item.id }
+    private var shortcutNumber: Int? {
+        guard let i = line.visible.filter({ !$0.falling }).firstIndex(where: { $0.id == item.id }), i < 9 else { return nil }
+        return i + 1
+    }
     private var dragging: Bool { line.draggingID == item.id }
     private var pressed: Bool { line.pressedID == item.id }
 
@@ -84,6 +88,19 @@ struct PeggedView: View {
                     .opacity(hovering && !dragging ? 1 : 0)
                     .scaleEffect(hovering ? 1 : 0.6)
                     .allowsHitTesting(false)
+            }
+            .overlay(alignment: .bottomLeading) {
+                // From the keyboard, each card shows the ⌘ number that copies it.
+                if line.keyboardMode, let n = shortcutNumber {
+                    Text("⌘\(n)")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .foregroundStyle(.primary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .glassFrame(capsule: true)
+                        .padding(4)
+                        .allowsHitTesting(false)
+                }
             }
             .overlay(GrabArea(item: item, line: line))
             .overlay(alignment: .bottom) {

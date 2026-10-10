@@ -6,6 +6,8 @@ enum Layout {
     static let spacing: CGFloat = 174
     static let cardWidth: CGFloat = 150
     static let pinAbove: CGFloat = 9.5
+    /// Room kept clear at each end for the line's tabs.
+    static let tabsReserve: CGFloat = 210
 
     /// The rope hangs as a parabola from edge to edge of the screen.
     static func sag(width: CGFloat) -> CGFloat { min(30, width * 0.018) }
@@ -32,27 +34,25 @@ struct LineView: View {
             ZStack(alignment: .topLeading) {
                 Rope(width: width)
 
-                if line.items.isEmpty {
-                    Hint()
+                ShelfTabs(line: line, bag: bag)
+                    .position(x: 12 + 95, y: Layout.ropeTop + 30)
+
+                if line.visible.isEmpty {
+                    Hint(shelf: line.shelf)
                         .position(x: width / 2, y: Layout.ropeY(x: width / 2, width: width) + 34)
                         .transition(.opacity)
                 }
 
-                // The bag hangs near the right end, where the rope fades out.
-                let bagX = width - 56
-                BagIcon(line: line, count: bag.pins.count)
-                    .position(x: bagX, y: Layout.ropeY(x: bagX, width: width) + 24)
-
-                ForEach(Array(line.items.enumerated()), id: \.element.id) { index, item in
-                    let x = Layout.x(index: index, count: line.items.count, width: width)
+                ForEach(Array(line.visible.enumerated()), id: \.element.id) { index, item in
+                    let x = Layout.x(index: index, count: line.visible.count, width: width)
                     let ropeY = Layout.ropeY(x: x, width: width)
                     PeggedView(item: item, line: line)
                         .frame(width: Layout.cardWidth, height: Layout.panelHeight - ropeY, alignment: .top)
                         .position(x: x, y: ropeY - Layout.pinAbove + (Layout.panelHeight - ropeY) / 2)
                 }
             }
-            .animation(.spring(response: 0.55, dampingFraction: 0.78), value: line.items.map(\.id))
-            .animation(.easeInOut(duration: 0.3), value: line.items.isEmpty)
+            .animation(.spring(response: 0.55, dampingFraction: 0.78), value: line.visible.map(\.id))
+            .animation(.easeInOut(duration: 0.3), value: line.visible.isEmpty)
             // Tucked away, the whole line waits above the top edge and slides
             // out from under the menu bar, the way an auto-hiding Dock does.
             .offset(y: line.revealed ? 0 : -(Layout.panelHeight + 12))
@@ -65,59 +65,89 @@ struct LineView: View {
     }
 }
 
-/// A small pouch on a short string. Rest on it to open it; drop a card's
-/// text on it to keep that text.
-private struct BagIcon: View {
+/// The lines you can switch between, as small tags at the left end of the
+/// rope: the recent one, then your own groups. Click one, or press Tab after
+/// bringing the line down with ⌃⌥T. Drop a card on a tag to keep its text there.
+private struct ShelfTabs: View {
     @ObservedObject var line: Line
-    let count: Int
-    @State private var targeted = false
+    @ObservedObject var bag: Bag
 
     var body: some View {
-        VStack(spacing: 0) {
-            Rectangle()
-                .fill(Color(white: 0.55))
-                .frame(width: 1, height: 12)
-            Image(systemName: "bag.fill")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.primary.opacity(0.75))
-                .frame(width: 28, height: 28)
-                .glassFrame(circle: true)
-                .overlay(alignment: .topTrailing) {
-                    if count > 0 {
-                        Text("\(count)")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 4)
-                            .frame(minWidth: 15, minHeight: 15)
-                            .background(Color.accentColor, in: Capsule())
-                            .offset(x: 5, y: -4)
-                    }
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 4) {
+                tab(.recent, title: L("Recent"), count: line.liveCount)
+                ForEach(bag.groups, id: \.self) { g in
+                    tab(.group(g), title: g, count: bag.pins(in: g).count)
                 }
-                .scaleEffect(line.bagHovered || targeted ? 1.12 : 1)
-                .animation(.spring(response: 0.3, dampingFraction: 0.6), value: line.bagHovered || targeted)
-                .onHover { line.bagHovered = $0 }
-                .onTapGesture { line.bagHovered = true }
-                .dropDestination(for: String.self) { texts, _ in
-                    for t in texts {
-                        Bag.shared.add(t, to: Secrets.mask(t).1 ? Bag.secretGroup : Bag.defaultGroups[0])
+                Button {
+                    if let name = askForText(L("New group")) {
+                        bag.addGroup(name)
+                        line.shelf = .group(name)
                     }
-                    line.bagHovered = true
-                    return !texts.isEmpty
-                } isTargeted: { targeted = $0 }
-                .background(
-                    GeometryReader { g in
-                        Color.clear.preference(key: HitRectsKey.self,
-                                               value: [Line.bagIconID: g.frame(in: .global)])
-                    }
-                )
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 9, weight: .bold))
+                        .frame(width: 18, height: 18)
+                        .glassFrame(circle: true)
+                }
+                .buttonStyle(.plain)
+            }
+            if line.keyboardMode {
+                Text(L("⇥ switch line · ⌘1–9 copy · hold ⌥ show keys · esc"))
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .glassFrame(capsule: true)
+                    .transition(.opacity)
+            }
         }
-        .help(L("Bag"))
+        .frame(width: 190, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
+        .background(
+            GeometryReader { g in
+                Color.clear.preference(key: HitRectsKey.self, value: [Line.tabsID: g.frame(in: .global)])
+            }
+        )
+    }
+
+    private func tab(_ shelf: Line.Shelf, title: String, count: Int) -> some View {
+        let selected = line.shelf == shelf
+        return Button {
+            line.shelf = shelf
+        } label: {
+            HStack(spacing: 3) {
+                if case .group(Bag.secretGroup) = shelf {
+                    Image(systemName: "lock.fill").font(.system(size: 8))
+                }
+                Text(title).lineLimit(1)
+                if count > 0 { Text("\(count)").foregroundStyle(.secondary) }
+            }
+            .font(.system(size: 11, weight: selected ? .bold : .medium))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(selected ? Color.accentColor.opacity(0.28) : Color.clear, in: Capsule())
+            .glassFrame(capsule: true)
+        }
+        .buttonStyle(.plain)
+        .dropDestination(for: String.self) { texts, _ in
+            guard case .group(let g) = shelf else { return false }
+            texts.forEach { bag.add($0, to: g) }
+            return !texts.isEmpty
+        }
+        .contextMenu {
+            if case .group(let g) = shelf, !Bag.defaultGroups.contains(g), bag.pins(in: g).isEmpty {
+                Button(L("Delete group")) { bag.removeGroup(g) }
+            }
+        }
     }
 }
 
 private struct Hint: View {
+    let shelf: Line.Shelf
     var body: some View {
-        Text(L("Take a screenshot and it will hang here"))
+        Text(shelf == .recent ? L("Take a screenshot and it will hang here")
+                              : L("Empty line: right-click a card on Recent › Hang on"))
             .font(.system(size: 12, weight: .medium, design: .rounded))
             .foregroundStyle(.secondary)
             .padding(.horizontal, 12)

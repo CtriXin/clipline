@@ -22,8 +22,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Space on the picture under the pointer. Registered only while the
     /// pointer rests on one, so Space keeps being Space everywhere else.
     private var previewHotKey: HotKey?
-    private let bagPanel = BagPanel()
-    private var bagAwaySince: Date?
+    /// ⌘1–9, Tab, Esc: registered only while the line is up from the
+    /// keyboard, so they are never taken from other apps otherwise.
+    private var keyboardKeys: [HotKey] = []
     private let preview = HoverPreview()
     private var previewWork: DispatchWorkItem?
     private var signalSources: [DispatchSourceSignal] = []
@@ -80,28 +81,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if Clips.isEnabled { clipWatcher?.start() }
 
         hotKey = HotKey(keyCode: kVK_ANSI_T, modifiers: controlKey | optionKey) { [weak self] in
-            self?.toggle()
+            self?.summon()
         }
 
         setUpStatusItem()
         watchMenuBarClicks()
 
-        line.$bagHovered
-            .receive(on: RunLoop.main)
-            .sink { [weak self] on in if on { self?.openBag() } }
-            .store(in: &cancellables)
-        Bag.shared.$pins
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                DispatchQueue.main.async { self?.bagPanel.refit() }
-            }
-            .store(in: &cancellables)
-        Bag.shared.$selectedGroup
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                DispatchQueue.main.async { self?.bagPanel.refit() }
-            }
-            .store(in: &cancellables)
         // Something in the bag is reason enough for the line to answer the top edge.
         if !Bag.shared.pins.isEmpty {
             wanted = true
@@ -259,6 +244,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 refresh()
             }
         } else if live > lastLiveCount {
+            // Something new arrived: show the line it is on.
+            line.shelf = .recent
             panel.placeOnScreen(pendingScreen)
             pendingScreen = nil
             updateCapacity()
@@ -303,7 +290,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func fly(_ id: UUID, from: CGRect) {
         guard isPresent, isRevealed, let screen = panel.screen,
               let to = cardFrame(for: id),
-              let item = line.items.first(where: { $0.id == id }) else {
+              let item = line.visible.first(where: { $0.id == id }) else {
             line.land(id)
             return
         }
@@ -325,11 +312,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.isRevealed, let screen = self.panel.screen,
                   self.line.hoveredID == id, self.line.draggingID == nil,
-                  let item = self.line.items.first(where: { $0.id == id && !$0.falling }),
+                  let item = self.line.visible.first(where: { $0.id == id && !$0.falling }),
                   let card = self.cardFrame(for: id) else { return }
             // Below the lowest card on the line, not just this one: the line
             // sags, and a preview under a high card would cover its neighbours.
-            let lowest = self.line.items.filter { !$0.falling }
+            let lowest = self.line.visible.filter { !$0.falling }
                 .compactMap { self.cardFrame(for: $0.id)?.minY }.min() ?? card.minY
             let below = CGRect(x: card.minX, y: lowest - 8, width: card.width, height: card.maxY - lowest + 8)
             self.preview.show(item.url, below: below, on: screen)
@@ -338,40 +325,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
     }
 
-    // MARK: The bag
+    // MARK: Keyboard
 
-    /// The bag's icon on screen, from where SwiftUI reported it in the panel.
-    private func bagIconFrame() -> CGRect? {
-        guard let r = line.hitRects[Line.bagIconID] else { return nil }
-        return CGRect(x: panel.frame.minX + r.minX, y: panel.frame.maxY - r.maxY, width: r.width, height: r.height)
+    /// ⌃⌥T brings the line down ready for the keyboard; pressed again it
+    /// walks to the next line, like Tab.
+    private func startKeyboardMode() {
+        line.keyboardMode = true
+        guard keyboardKeys.isEmpty else { return }
+        let digits = [kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3, kVK_ANSI_4, kVK_ANSI_5,
+                      kVK_ANSI_6, kVK_ANSI_7, kVK_ANSI_8, kVK_ANSI_9]
+        for (n, key) in digits.enumerated() {
+            keyboardKeys.append(HotKey(keyCode: key, modifiers: cmdKey) { [weak self] in
+                guard let self, self.line.copy(at: n) else { NSSound.beep(); return }
+                // Copied: out of the way, so it can be pasted at once.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in self?.tuckAway() }
+            })
+        }
+        keyboardKeys.append(HotKey(keyCode: kVK_Tab, modifiers: 0) { [weak self] in self?.line.nextShelf() })
+        keyboardKeys.append(HotKey(keyCode: kVK_Tab, modifiers: shiftKey) { [weak self] in self?.line.nextShelf(-1) })
+        keyboardKeys.append(HotKey(keyCode: kVK_Escape, modifiers: 0) { [weak self] in self?.tuckAway() })
     }
 
-    private func openBag() {
-        guard isRevealed, let screen = panel.screen, let icon = bagIconFrame() else { return }
-        preview.hide()
-        bagAwaySince = nil
-        bagPanel.open(below: icon, on: screen)
+    private func stopKeyboardMode() {
+        keyboardKeys.removeAll()
+        line.keyboardMode = false
+        line.revealSecrets = false
     }
 
-    /// Keeps the bag open while the pointer is on it or on its icon; closes
-    /// it a moment after the pointer leaves both. Returns whether it is in.
-    private func trackBag(_ mouse: NSPoint, now: Date) -> Bool {
-        guard bagPanel.isOpen else { return false }
-        let icon = bagIconFrame()?.insetBy(dx: -10, dy: -10) ?? .zero
-        // A modal prompt (rename, new group) is in front: leave the bag be.
-        if NSApp.modalWindow != nil { return true }
-        if NSMouseInRect(mouse, bagPanel.frame, false) || NSMouseInRect(mouse, icon, false) {
-            bagAwaySince = nil
-            return true
+    private func tuckAway() {
+        pinned = false
+        setRevealed(false)
+        if line.liveCount == 0 && Bag.shared.pins.isEmpty {
+            keepOpen = false
+            wanted = false
+            refresh()
         }
-        let since = bagAwaySince ?? now
-        bagAwaySince = since
-        if now.timeIntervalSince(since) >= 0.4 {
-            bagAwaySince = nil
-            bagPanel.close()
-            line.bagHovered = false
-        }
-        return false
     }
 
     // MARK: Quick Look
@@ -379,7 +367,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Space previews the picture under the pointer in Quick Look, like the
     /// Finder. Text clips have no file and keep the hover preview instead.
     private func updatePreviewHotKey(hovered id: UUID?) {
-        let url = id.flatMap { id in line.items.first { $0.id == id }?.url }
+        let url = id.flatMap { id in line.visible.first { $0.id == id }?.url }
         if url?.isFileURL == true || Previewer.shared.isVisible {
             guard previewHotKey == nil else { return }
             previewHotKey = HotKey(keyCode: kVK_Space, modifiers: 0) { [weak self] in
@@ -391,7 +379,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func togglePreview() {
-        let url = line.hoveredID.flatMap { id in line.items.first { $0.id == id }?.url }
+        let url = line.hoveredID.flatMap { id in line.visible.first { $0.id == id }?.url }
         preview.hide()
         Previewer.shared.toggle(url?.isFileURL == true ? url : nil)
         updatePreviewHotKey(hovered: line.hoveredID)
@@ -408,12 +396,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Where a card will hang, in screen coordinates, using the same layout
     /// as the line view.
     private func cardFrame(for id: UUID) -> CGRect? {
-        guard let index = line.items.firstIndex(where: { $0.id == id }) else { return nil }
+        let shown = line.visible
+        guard let index = shown.firstIndex(where: { $0.id == id }) else { return nil }
         let width = panel.frame.width
-        let x = Layout.x(index: index, count: line.items.count, width: width)
+        let x = Layout.x(index: index, count: shown.count, width: width)
         let viewTop = Layout.ropeY(x: x, width: width) - Layout.pinAbove
         let cardTop = viewTop + PeggedView.cardOffsetBelowTop
-        let size = PeggedView.cardSize(for: line.items[index].thumb.size)
+        let size = PeggedView.cardSize(for: shown[index].thumb.size)
         return CGRect(x: panel.frame.minX + x - size.width / 2,
                       y: panel.frame.maxY - cardTop - size.height,
                       width: size.width, height: size.height)
@@ -475,8 +464,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         isRevealed = on
         line.revealed = on
         if !on {
-            bagPanel.close()
-            line.bagHovered = false
+            stopKeyboardMode()
+            // Next time it comes down on its own, it shows what is new.
+            line.shelf = .recent
         }
         // Tucked away, the line leaves no window behind: an invisible strip
         // over the top of the screen would still sit above other apps for
@@ -494,6 +484,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             peekUntil = .distantPast
             panel.ignoresMouseEvents = true
         }
+    }
+
+    /// ⌃⌥T: down and ready for the keyboard; again, the next line.
+    private func summon() {
+        if isRevealed && line.keyboardMode {
+            line.nextShelf()
+            return
+        }
+        if !isRevealed { toggle() }
+        startKeyboardMode()
     }
 
     @objc private func toggle() {
@@ -605,11 +605,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // screen, menu bar included, so moving up never hides it.
         var zone = panel.frame
         if let screen = panel.screen { zone.size.height = screen.frame.maxY - zone.minY }
-        let inBag = trackBag(mouse, now: now)
-        let inside = NSMouseInRect(mouse, zone, false) || inBag
+        let inside = NSMouseInRect(mouse, zone, false)
+        // Option held shows keys in full, on the cards and in the preview.
+        let option = NSEvent.modifierFlags.contains(.option)
+        if line.revealSecrets != option && (line.keyboardMode || inside) { line.revealSecrets = option }
         if inside && pinned { pinned = false }
 
-        let busy = pinned || GrabView.isDragging || line.pressedID != nil || now < peekUntil
+        let busy = pinned || line.keyboardMode || GrabView.isDragging || line.pressedID != nil || now < peekUntil
         if inside || busy {
             awaySince = nil
         } else {
@@ -636,7 +638,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func updateCapacity() {
-        let usable = panel.frame.width - 200
+        let usable = panel.frame.width - 2 * Layout.tabsReserve
         line.maxItems = max(3, min(12, Int(usable / Layout.spacing)))
     }
 

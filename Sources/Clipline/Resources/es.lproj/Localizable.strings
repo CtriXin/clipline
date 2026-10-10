@@ -35,17 +35,16 @@
 
 "Hang clipboard" = "Colgar el portapapeles";
 "Open link" = "Abrir enlace";
-"Bag" = "Bolsa";
-"Put in the bag" = "Guardar en la bolsa";
 "New group…" = "Grupo nuevo…";
 "New group" = "Grupo nuevo";
 "Delete group" = "Eliminar grupo";
 "Rename…" = "Renombrar…";
 "Rename" = "Renombrar";
 "Move to" = "Mover a";
-"Remove from the bag" = "Sacar de la bolsa";
 "OK" = "Aceptar";
 "Cancel" = "Cancelar";
-"Right-click a card on the line › Put in the bag" = "Clic derecho en una tarjeta › Guardar en la bolsa";
-"Showing keys in full" = "Mostrando las claves completas";
-"Click to copy · hold ⌥ to show keys" = "Clic para copiar · mantén ⌥ para ver las claves";
+"Recent" = "Recientes";
+"Hang on" = "Colgar en";
+"Take off this line" = "Quitar de esta cuerda";
+"Empty line: right-click a card on Recent › Hang on" = "Cuerda vacía: clic derecho en una tarjeta de Recientes › Colgar en";
+"⇥ switch line · ⌘1–9 copy · hold ⌥ show keys · esc" = "⇥ cambiar · ⌘1–9 copiar · ⌥ ver claves · esc";

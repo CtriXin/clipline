@@ -53,9 +53,11 @@ final class HoverPreview {
     }
 
     private static func content(for url: URL) -> AnyView? {
-        if Clips.isText(url) {
-            guard let raw = Clips.text(of: url) else { return nil }
-            let (text, hidden) = Secrets.mask(raw)
+        let pinned = url.scheme == "clipline-pin"
+        if Clips.isText(url) || pinned {
+            guard let raw = pinned ? Bag.shared.text(forCard: url) : Clips.text(of: url) else { return nil }
+            // Keys show in full only while Option is held.
+            let (text, hidden) = NSEvent.modifierFlags.contains(.option) ? (raw, false) : Secrets.mask(raw)
             let body = (hidden ? "🔒 " : "") + (text.count > 1500 ? String(text.prefix(1500)) + "…" : text)
             return AnyView(
                 Text(body)

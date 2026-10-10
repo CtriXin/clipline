@@ -31,9 +31,21 @@ final class Line: ObservableObject {
     @Published var pressedID: UUID?
     /// The card under the pointer, for the large preview.
     @Published var hoveredID: UUID?
-    /// The pointer is on the bag at the end of the line.
-    @Published var bagHovered = false
-    static let bagIconID = UUID()
+    /// Which line is up: the recent one (screenshots and the clipboard) or
+    /// one of your own groups. Switching swaps the whole line.
+    @Published var shelf: Shelf = .recent { didSet { if shelf != oldValue { rebuildPins() } } }
+    /// The current group's pins, hung as cards.
+    @Published private(set) var pinCards: [Pegged] = []
+    /// Option held: keys on the cards show in full.
+    @Published var revealSecrets = false { didSet { if revealSecrets != oldValue { rebuildPins() } } }
+    /// Brought up from the keyboard: ⌘1–9 copy, Tab switches lines, Esc leaves.
+    @Published var keyboardMode = false
+    static let tabsID = UUID()
+
+    /// What hangs on the line right now.
+    var visible: [Pegged] { shelf == .recent ? items : pinCards }
+    private var pinPegs: [UUID: Pegged] = [:]
+    private var bagWatch: AnyCancellable?
     /// Whether the line has slid down into view.
     @Published var revealed = false
 
@@ -56,6 +68,59 @@ final class Line: ObservableObject {
     init() {
         restore()
         scheduleGust()
+        // @Published reports before the change lands: read it a beat later.
+        bagWatch = Bag.shared.$pins.sink { [weak self] _ in
+            DispatchQueue.main.async { self?.rebuildPins() }
+        }
+    }
+
+    // MARK: Your own lines
+
+    enum Shelf: Equatable {
+        case recent
+        case group(String)
+    }
+
+    /// Every line, in the order Tab walks them.
+    var shelves: [Shelf] { [.recent] + Bag.shared.groups.map(Shelf.group) }
+
+    func nextShelf(_ step: Int = 1) {
+        let all = shelves
+        let i = all.firstIndex(of: shelf) ?? 0
+        shelf = all[(i + step + all.count) % all.count]
+    }
+
+    func rebuildPins() {
+        guard case .group(let g) = shelf else {
+            if !pinCards.isEmpty { pinCards = [] }
+            return
+        }
+        if !Bag.shared.groups.contains(g) { shelf = .recent; return }
+        let bag = Bag.shared
+        pinCards = bag.pins(in: g).prefix(maxItems).map { pin in
+            let value = revealSecrets ? pin.text : bag.shown(pin)
+            let thumb = makePinCard(title: pin.title, value: value, locked: bag.isSecret(pin) && !revealSecrets)
+            var peg = pinPegs[pin.id] ?? Pegged(url: URL(string: "clipline-pin://\(pin.id.uuidString)")!, thumb: thumb)
+            peg.thumb = thumb
+            pinPegs[pin.id] = peg
+            return peg
+        }
+    }
+
+    /// The pin behind a card on one of your own lines.
+    func pin(for id: UUID) -> Pin? {
+        guard let peg = pinCards.first(where: { $0.id == id }),
+              let key = peg.url.host.flatMap(UUID.init(uuidString:)) else { return nil }
+        return Bag.shared.pins.first { $0.id == key }
+    }
+
+    /// ⌘1–9: copy the card in that place.
+    @discardableResult
+    func copy(at index: Int) -> Bool {
+        let live = visible.filter { !$0.falling }
+        guard live.indices.contains(index) else { return false }
+        copy(live[index].id)
+        return true
     }
 
     // MARK: Hanging and dropping
@@ -140,6 +205,11 @@ final class Line: ObservableObject {
     // MARK: Actions on one photo
 
     func copy(_ id: UUID) {
+        if let pin = pin(for: id) {
+            Bag.shared.copy(pin.id)
+            flashCopied(id)
+            return
+        }
         guard let item = items.first(where: { $0.id == id }) else { return }
         let pb = NSPasteboard.general
         pb.clearContents()
@@ -152,7 +222,10 @@ final class Line: ObservableObject {
             pb.writeObjects([entry])
         }
         Clips.ownChangeCount = pb.changeCount
+        flashCopied(id)
+    }
 
+    private func flashCopied(_ id: UUID) {
         copiedID = id
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
             if self?.copiedID == id { self?.copiedID = nil }

@@ -284,3 +284,33 @@ func makeTextCard(_ text: String, link: URL?, maxPixels: Int = 480) -> NSImage {
     image.unlockFocus()
     return image
 }
+
+/// A pin drawn as a card for one of your own lines: its name on top, the
+/// value below, keys with only their ends showing.
+func makePinCard(title: String, value: String, locked: Bool, maxPixels: Int = 480) -> NSImage {
+    let width = CGFloat(maxPixels), height = CGFloat(maxPixels) * 0.76
+    let scale = width / 480
+    let dark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    let paper = dark ? NSColor(calibratedRed: 0.17, green: 0.20, blue: 0.24, alpha: 1)
+                     : NSColor(calibratedRed: 0.92, green: 0.96, blue: 1.0, alpha: 1)
+    let ink = dark ? NSColor(calibratedWhite: 0.94, alpha: 1) : NSColor(calibratedWhite: 0.12, alpha: 1)
+
+    let image = NSImage(size: NSSize(width: width, height: height))
+    image.lockFocus()
+    paper.setFill()
+    NSBezierPath(rect: NSRect(x: 0, y: 0, width: width, height: height)).fill()
+    let para = NSMutableParagraphStyle()
+    para.lineBreakMode = .byWordWrapping
+    para.lineSpacing = 3 * scale
+    let body = NSMutableAttributedString(string: (locked ? "🔒 " : "") + title + "\n", attributes: [
+        .font: NSFont.systemFont(ofSize: 44 * scale, weight: .bold), .foregroundColor: ink, .paragraphStyle: para])
+    let v = value.count > 120 ? String(value.prefix(120)) + "…" : value
+    body.append(NSAttributedString(string: v, attributes: [
+        .font: NSFont.monospacedSystemFont(ofSize: 34 * scale, weight: .regular),
+        .foregroundColor: ink.withAlphaComponent(0.7), .paragraphStyle: para]))
+    let pad = 18 * scale
+    body.draw(with: NSRect(x: pad, y: pad, width: width - pad * 2, height: height - pad * 2),
+              options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+    image.unlockFocus()
+    return image
+}

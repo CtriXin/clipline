@@ -45,13 +45,29 @@ struct GrabArea: NSViewRepresentable {
         view.menuProvider = {
             let menu = NSMenu()
             menu.addItem(ClosureMenuItem(L("Copy")) { line.copy(id) })
+            // A card on one of your own lines.
+            if let pin = line.pin(for: id) {
+                menu.addItem(ClosureMenuItem(L("Rename…")) {
+                    if let t = askForText(L("Rename"), value: pin.title) { Bag.shared.rename(pin.id, to: t) }
+                })
+                let move = NSMenuItem(title: L("Move to"), action: nil, keyEquivalent: "")
+                let groups = NSMenu()
+                for g in Bag.shared.groups where g != pin.group {
+                    groups.addItem(ClosureMenuItem(g) { Bag.shared.move(pin.id, to: g) })
+                }
+                move.submenu = groups
+                menu.addItem(move)
+                menu.addItem(.separator())
+                menu.addItem(ClosureMenuItem(L("Take off this line")) { Bag.shared.remove(pin.id) })
+                return menu
+            }
             // Text lives only in memory: there is no file to open or show.
             if Clips.isText(url) {
                 if Clips.link(of: url) != nil {
                     menu.addItem(ClosureMenuItem(L("Open link")) { line.open(id) })
                 }
                 // Keep it: into one of the bag's groups.
-                let bagItem = NSMenuItem(title: L("Put in the bag"), action: nil, keyEquivalent: "")
+                let bagItem = NSMenuItem(title: L("Hang on"), action: nil, keyEquivalent: "")
                 let groups = NSMenu()
                 let text = Clips.text(of: url) ?? ""
                 for g in Bag.shared.groups {
@@ -163,8 +179,9 @@ final class GrabView: NSView, NSDraggingSource {
         endPress()
 
         // A text clip drags as its text, so it drops into any text field.
-        let writer: NSPasteboardWriting = Clips.isText(url)
-            ? (Clips.text(of: url) ?? "") as NSString : url as NSURL
+        let writer: NSPasteboardWriting = url.scheme == "clipline-pin"
+            ? (Bag.shared.text(forCard: url) ?? "") as NSString
+            : Clips.isText(url) ? (Clips.text(of: url) ?? "") as NSString : url as NSURL
         let item = NSDraggingItem(pasteboardWriter: writer)
         item.setDraggingFrame(imageFrame(), contents: dragImage)
         let session = beginDraggingSession(with: [item], event: event, source: self)

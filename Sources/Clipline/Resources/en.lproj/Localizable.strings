@@ -37,17 +37,16 @@
 
 "Hang clipboard" = "Hang clipboard";
 "Open link" = "Open link";
-"Bag" = "Bag";
-"Put in the bag" = "Put in the bag";
 "New group…" = "New group…";
 "New group" = "New group";
 "Delete group" = "Delete group";
 "Rename…" = "Rename…";
 "Rename" = "Rename";
 "Move to" = "Move to";
-"Remove from the bag" = "Remove from the bag";
 "OK" = "OK";
 "Cancel" = "Cancel";
-"Right-click a card on the line › Put in the bag" = "Right-click a card on the line › Put in the bag";
-"Showing keys in full" = "Showing keys in full";
-"Click to copy · hold ⌥ to show keys" = "Click to copy · hold ⌥ to show keys";
+"Recent" = "Recent";
+"Hang on" = "Hang on";
+"Take off this line" = "Take off this line";
+"Empty line: right-click a card on Recent › Hang on" = "Empty line: right-click a card on Recent › Hang on";
+"⇥ switch line · ⌘1–9 copy · hold ⌥ show keys · esc" = "⇥ switch line · ⌘1–9 copy · hold ⌥ show keys · esc";

@@ -20,8 +20,6 @@ final class Bag: ObservableObject {
 
     @Published private(set) var pins: [Pin] = []
     @Published private(set) var groups: [String] = Bag.defaultGroups
-    @Published var selectedGroup = Bag.defaultGroups[0]
-    @Published var copiedID: UUID?
 
     private init() { load() }
 
@@ -36,7 +34,6 @@ final class Bag: ObservableObject {
         // Already in that group: nothing new to keep.
         guard !pins.contains(where: { $0.text == t && $0.group == group }) else { return }
         pins.append(Pin(title: Self.defaultTitle(for: t), text: t, group: group))
-        selectedGroup = group
         save()
     }
 
@@ -63,7 +60,6 @@ final class Bag: ObservableObject {
         let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !n.isEmpty, !groups.contains(n) else { return }
         groups.append(n)
-        selectedGroup = n
         save()
     }
 
@@ -71,7 +67,6 @@ final class Bag: ObservableObject {
     func removeGroup(_ name: String) {
         guard !Self.defaultGroups.contains(name), pins(in: name).isEmpty else { return }
         groups.removeAll { $0 == name }
-        if selectedGroup == name { selectedGroup = groups[0] }
         save()
     }
 
@@ -87,10 +82,12 @@ final class Bag: ObservableObject {
         if isSecret(pin) { item.setString("", forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")) }
         pb.writeObjects([item])
         Clips.ownChangeCount = pb.changeCount
-        copiedID = id
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
-            if self?.copiedID == id { self?.copiedID = nil }
-        }
+    }
+
+    /// The text behind a card on one of your own lines.
+    func text(forCard url: URL) -> String? {
+        guard let id = url.host.flatMap(UUID.init(uuidString:)) else { return nil }
+        return pins.first { $0.id == id }?.text
     }
 
     func isSecret(_ pin: Pin) -> Bool { pin.group == Self.secretGroup || Secrets.mask(pin.text).1 }
@@ -152,4 +149,22 @@ final class Bag: ObservableObject {
             log.error("Could not save the bag to the Keychain: \(status, privacy: .public)")
         }
     }
+}
+
+/// Asks for one line of text. The app is brought to the front for it, since
+/// typing is an explicit request.
+@MainActor
+func askForText(_ title: String, value: String = "") -> String? {
+    let alert = NSAlert()
+    alert.messageText = title
+    let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+    field.stringValue = value
+    alert.accessoryView = field
+    alert.addButton(withTitle: L("OK"))
+    alert.addButton(withTitle: L("Cancel"))
+    NSApp.activate(ignoringOtherApps: true)
+    alert.window.initialFirstResponder = field
+    guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+    let t = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    return t.isEmpty ? nil : t
 }
