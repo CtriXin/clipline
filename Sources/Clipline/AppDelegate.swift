@@ -39,6 +39,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var hotKey: HotKey?
     private var cancellables = Set<AnyCancellable>()
     private var mouseTimer: Timer?
+    private lazy var settings = SettingsWindow(line: line, actions: SettingsActions(
+        setInbox: { [weak self] on in self?.setInbox(on) },
+        setClipboard: { [weak self] on in self?.setClipboard(on) },
+        changeShortcut: { [weak self] in self?.changeSummon() }))
 
     /// Whether the panel is ordered in. It can be in and still tucked away
     /// above the top edge, like an auto-hiding Dock.
@@ -209,6 +213,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         qq.start()
         qqWatcher = qq
     }
+
+    private func setClipboard(_ on: Bool) {
+        Clips.isEnabled = on
+        if on { clipWatcher?.start() } else { clipWatcher?.stop() }
+    }
+
+    func showSettings() { settings.show() }
 
     private func setInbox(_ on: Bool) {
         Inbox.isEnabled = on
@@ -870,16 +881,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         tidyItem.isEnabled = !line.isTidy
         menu.addItem(tidyItem)
 
-        let inbox = ClosureMenuItem(L("Handle screenshots")) { [weak self] in
-            self?.setInbox(!Inbox.isEnabled)
-        }
-        inbox.state = Inbox.isEnabled ? .on : .off
-        inbox.toolTip = L("Screenshots hang instantly and skip the Desktop")
-        menu.addItem(inbox)
-
         let clip = ClosureMenuItem(L("Hang clipboard")) { [weak self] in
-            Clips.isEnabled.toggle()
-            if Clips.isEnabled { self?.clipWatcher?.start() } else { self?.clipWatcher?.stop() }
+            self?.setClipboard(!Clips.isEnabled)
         }
         clip.state = Clips.isEnabled ? .on : .off
         menu.addItem(clip)
@@ -891,32 +894,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        menu.addItem(ClosureMenuItem(String(format: L("Shortcut: %@…"), Shortcut.saved.display)) { [weak self] in
-            self?.changeSummon()
+        menu.addItem(ClosureMenuItem(L("Settings…"), key: ",") { [weak self] in
+            self?.showSettings()
         })
-
-        let paceItem = NSMenuItem(title: L("Line speed"), action: nil, keyEquivalent: "")
-        let paces = NSMenu()
-        for pace in Line.Pace.allCases {
-            let item = ClosureMenuItem(pace.title) { [weak self] in self?.line.pace = pace }
-            item.state = line.pace == pace ? .on : .off
-            paces.addItem(item)
-        }
-        paceItem.submenu = paces
-        menu.addItem(paceItem)
-
-        let sound = ClosureMenuItem(L("Sounds")) { [weak self] in
-            guard let self else { return }
-            self.line.soundOn.toggle()
-        }
-        sound.state = line.soundOn ? .on : .off
-        menu.addItem(sound)
-
-        let login = ClosureMenuItem(L("Open at login")) {
-            AppDelegate.toggleLaunchAtLogin()
-        }
-        login.state = SMAppService.mainApp.status == .enabled ? .on : .off
-        menu.addItem(login)
 
         menu.addItem(.separator())
         menu.addItem(ClosureMenuItem(L("Quit Clipline"), key: "q") {
@@ -924,7 +904,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         })
     }
 
-    private static func toggleLaunchAtLogin() {
+    static func toggleLaunchAtLogin() {
         do {
             if SMAppService.mainApp.status == .enabled {
                 try SMAppService.mainApp.unregister()
