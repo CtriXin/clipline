@@ -132,7 +132,11 @@ private struct ShelfTabs: View {
         .buttonStyle(.plain)
         .dropDestination(for: String.self) { texts, _ in
             guard case .group(let g) = shelf else { return false }
-            texts.forEach { bag.add($0, to: g) }
+            for t in texts {
+                let from = line.items.first { Clips.text(of: $0.url) == t }.flatMap { Clips.source(of: $0.url) }
+                // Ask once the drop has finished, not in the middle of it.
+                DispatchQueue.main.async { bag.pin(t, to: g, source: from) }
+            }
             return !texts.isEmpty
         }
         .contextMenu {

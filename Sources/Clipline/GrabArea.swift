@@ -71,11 +71,14 @@ struct GrabArea: NSViewRepresentable {
                 let groups = NSMenu()
                 let text = Clips.text(of: url) ?? ""
                 for g in Bag.shared.groups {
-                    groups.addItem(ClosureMenuItem(g) { Bag.shared.add(text, to: g) })
+                    groups.addItem(ClosureMenuItem(g) { Bag.shared.pin(text, to: g, source: Clips.source(of: url)) })
                 }
                 groups.addItem(.separator())
                 groups.addItem(ClosureMenuItem(L("New group…")) {
-                    if let name = askForText(L("New group")) { Bag.shared.add(text, to: name) }
+                    if let name = askForText(L("New group")) {
+                        Bag.shared.addGroup(name)
+                        Bag.shared.pin(text, to: name, source: Clips.source(of: url))
+                    }
                 })
                 bagItem.submenu = groups
                 menu.addItem(bagItem)

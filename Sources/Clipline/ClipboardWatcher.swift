@@ -21,16 +21,22 @@ enum Clips {
     }
 
     nonisolated(unsafe) private static var texts: [String: String] = [:]
+    /// Where each text was copied from: a site, or the app.
+    nonisolated(unsafe) private static var sources: [String: String] = [:]
 
-    static func storeText(_ text: String) -> URL {
+    static func storeText(_ text: String, source: String? = nil) -> URL {
         let key = UUID().uuidString
         texts[key] = text
+        sources[key] = source
         return URL(string: "\(textScheme)://\(key)")!
     }
+
+    static func source(of url: URL) -> String? { isText(url) ? sources[url.host ?? ""] : nil }
 
     static func forget(_ url: URL) {
         if isText(url) {
             texts[url.host ?? ""] = nil
+            sources[url.host ?? ""] = nil
         } else if contains(url) {
             try? FileManager.default.removeItem(at: url)
         }
@@ -57,6 +63,7 @@ enum Clips {
     /// Clears the scratch folder: on launch, nothing from last time comes back.
     static func wipe() {
         texts.removeAll()
+        sources.removeAll()
         try? FileManager.default.removeItem(at: folder)
     }
 
@@ -134,8 +141,20 @@ final class ClipboardWatcher {
         if var text = pb.string(forType: .string),
            !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             if text.count > Self.maxTextLength { text = String(text.prefix(Self.maxTextLength)) }
-            onNew(Clips.storeText(text))
+            onNew(Clips.storeText(text, source: source(of: pb)))
         }
+    }
+
+    /// Where a copy came from: Chromium browsers attach the page's address,
+    /// otherwise the app in front is the best guess.
+    private func source(of pb: NSPasteboard) -> String? {
+        let pageType = NSPasteboard.PasteboardType("org.chromium.source-url")
+        if let page = pb.string(forType: pageType), let host = URL(string: page)?.host {
+            return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+        }
+        guard let app = NSWorkspace.shared.frontmostApplication,
+              app.bundleIdentifier != Bundle.main.bundleIdentifier else { return nil }
+        return app.localizedName
     }
 
     private func imagePNG(_ pb: NSPasteboard) -> Data? {

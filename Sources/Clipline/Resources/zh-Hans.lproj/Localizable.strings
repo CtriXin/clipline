@@ -38,8 +38,8 @@
 "New group…" = "新分组…";
 "New group" = "新分组";
 "Delete group" = "删除分组";
-"Rename…" = "重命名…";
-"Rename" = "重命名";
+"Rename…" = "改标签…";
+"Rename" = "改标签";
 "Move to" = "移到";
 "OK" = "好";
 "Cancel" = "取消";
@@ -48,3 +48,4 @@
 "Take off this line" = "从这根绳上取下（删除）";
 "Empty line: right-click a card on Recent › Hang on" = "这根绳还空着：在「最近」里右键卡片 › 挂到";
 "⇥ switch line · ⌘1–9 copy · hold ⌥ show keys · esc" = "⇥ 换绳 · ⌘1–9 复制 · 按住 ⌥ 看原文 · esc 收起";
+"What is this? (site, account or use)" = "这是什么？（网站 / 账号 / 用途）";

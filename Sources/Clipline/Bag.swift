@@ -7,6 +7,8 @@ struct Pin: Codable, Identifiable, Equatable {
     var title: String
     var text: String
     var group: String
+    /// The site or app it was copied from, when known.
+    var source: String?
 }
 
 /// The bag at the end of the line. Unlike everything on the line, what goes
@@ -27,13 +29,25 @@ final class Bag: ObservableObject {
 
     // MARK: Changing what is in the bag
 
-    func add(_ text: String, to group: String) {
+    /// Hangs text on one of your lines, asking first what it is: the label
+    /// is what the card shows, so you can tell which site a key belongs to.
+    /// The suggestion is where it was copied from; Return accepts it.
+    func pin(_ text: String, to group: String, source: String?) {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        // Already on that line: nothing new to keep.
+        guard !pins.contains(where: { $0.text == t && $0.group == group }) else { return }
+        guard let label = askForText(L("What is this? (site, account or use)"),
+                                     value: source ?? Self.defaultTitle(for: t)) else { return }
+        add(t, to: group, title: label, source: source)
+    }
+
+    func add(_ text: String, to group: String, title: String? = nil, source: String? = nil) {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
         if !groups.contains(group) { groups.append(group) }
-        // Already in that group: nothing new to keep.
         guard !pins.contains(where: { $0.text == t && $0.group == group }) else { return }
-        pins.append(Pin(title: Self.defaultTitle(for: t), text: t, group: group))
+        pins.append(Pin(title: title ?? Self.defaultTitle(for: t), text: t, group: group, source: source))
         save()
     }
 
