@@ -15,6 +15,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// landing on the Desktop, and they still hang on the line.
     private var safetyWatcher: ScreenshotWatcher?
     private var clipWatcher: ClipboardWatcher?
+    /// QQ keeps a copy of every screenshot it copies to the clipboard inside
+    /// its own container; watching it hangs QQ captures with their flight.
+    /// From y0un922/tendedero (MIT).
+    private var qqWatcher: ScreenshotWatcher?
+    /// Space on the picture under the pointer. Registered only while the
+    /// pointer rests on one, so Space keeps being Space everywhere else.
+    private var previewHotKey: HotKey?
     private let preview = HoverPreview()
     private var previewWork: DispatchWorkItem?
     private var signalSources: [DispatchSourceSignal] = []
@@ -77,6 +84,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setUpStatusItem()
         watchMenuBarClicks()
 
+        Previewer.shared.onClosed = { [weak self] in
+            self?.updatePreviewHotKey(hovered: self?.line.hoveredID)
+        }
         Markup.shared.onSaved = { [weak self] url in self?.line.reloadThumbnail(for: url) }
         line.onFall = { [weak self] item in self?.fall(item) }
 
@@ -84,6 +94,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .receive(on: RunLoop.main)
             .sink { [weak self] hovered, dragging, pressed in
                 self?.updatePreview(hovered: dragging == nil && pressed == nil ? hovered : nil)
+                self?.updatePreviewHotKey(hovered: hovered)
             }
             .store(in: &cancellables)
 
@@ -144,7 +155,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         safetyWatcher?.stop()
         safetyWatcher = nil
         watcher = ScreenshotWatcher(
-            onNew: { [weak self] url in self?.hangCapture(url) },
+            onNew: { [weak self] url in self?.hangCapture(url) ?? false },
             onChange: { [weak self] in self?.line.prune() })
         watcher.start()
         if Inbox.isEnabled, watcher.folder.standardizedFileURL != ScreenshotWatcher.desktop.standardizedFileURL {
@@ -152,12 +163,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 folder: ScreenshotWatcher.desktop,
                 onNew: { [weak self] url in
                     log.notice("Screenshot landed on the Desktop despite inbox mode: \(url.lastPathComponent, privacy: .public)")
-                    self?.hangCapture(url)
+                    return self?.hangCapture(url) ?? false
                 },
                 onChange: { [weak self] in self?.line.prune() })
             safety.start()
             safetyWatcher = safety
         }
+
+        qqWatcher?.stop()
+        let qq = ScreenshotWatcher(
+            folder: FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Containers/com.tencent.qq/Data/tmp", isDirectory: true),
+            onNew: { [weak self] url in
+                // QQ_<epoch ms>.png is the capture; QQ_<epoch ms>_thumb.png is
+                // the little preview it keeps next to it.
+                let name = url.lastPathComponent
+                guard name.hasPrefix("QQ_"), !name.hasSuffix("_thumb.png") else { return true }
+                return self?.hangCapture(url) ?? false
+            },
+            onChange: { [weak self] in self?.line.prune() })
+        qq.start()
+        qqWatcher = qq
     }
 
     private func setInbox(_ on: Bool) {
@@ -224,17 +250,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// A new screenshot lifts off from where it was taken and flies to its
     /// place on the line. Without a known capture area it simply drops in.
-    private func hangCapture(_ url: URL) {
+    @discardableResult
+    private func hangCapture(_ url: URL) -> Bool {
+        // A second watcher can report a capture that is already on the line.
+        if line.items.contains(where: { $0.url == url && !$0.falling }) { return true }
         let from = captureRect(of: url)
         if let from {
             let center = CGPoint(x: from.midX, y: from.midY)
             pendingScreen = NSScreen.screens.first { NSMouseInRect(center, $0.frame, false) }
         }
-        guard let id = line.hang(url, flying: from != nil), let from else { return }
+        guard let id = line.hang(url, flying: from != nil) else {
+            pendingScreen = nil
+            return false
+        }
+        guard let from else { return true }
         // Let the line come down and lay out before measuring the landing spot.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
             self?.fly(id, from: from)
         }
+        return true
     }
 
     private func fly(_ id: UUID, from: CGRect) {
@@ -264,10 +298,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                   self.line.hoveredID == id, self.line.draggingID == nil,
                   let item = self.line.items.first(where: { $0.id == id && !$0.falling }),
                   let card = self.cardFrame(for: id) else { return }
-            self.preview.show(item.url, below: card, on: screen)
+            // Below the lowest card on the line, not just this one: the line
+            // sags, and a preview under a high card would cover its neighbours.
+            let lowest = self.line.items.filter { !$0.falling }
+                .compactMap { self.cardFrame(for: $0.id)?.minY }.min() ?? card.minY
+            let below = CGRect(x: card.minX, y: lowest - 8, width: card.width, height: card.maxY - lowest + 8)
+            self.preview.show(item.url, below: below, on: screen)
         }
         previewWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+    }
+
+    // MARK: Quick Look
+
+    /// Space previews the picture under the pointer in Quick Look, like the
+    /// Finder. Text clips have no file and keep the hover preview instead.
+    private func updatePreviewHotKey(hovered id: UUID?) {
+        let url = id.flatMap { id in line.items.first { $0.id == id }?.url }
+        if url?.isFileURL == true || Previewer.shared.isVisible {
+            guard previewHotKey == nil else { return }
+            previewHotKey = HotKey(keyCode: kVK_Space, modifiers: 0) { [weak self] in
+                self?.togglePreview()
+            }
+        } else {
+            previewHotKey = nil
+        }
+    }
+
+    private func togglePreview() {
+        let url = line.hoveredID.flatMap { id in line.items.first { $0.id == id }?.url }
+        preview.hide()
+        Previewer.shared.toggle(url?.isFileURL == true ? url : nil)
+        updatePreviewHotKey(hovered: line.hoveredID)
     }
 
     /// A discarded card falls over the whole screen, from where it hangs.
@@ -299,6 +361,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             ?? LinePanel.screenUnderPointer().map(FullScreen.isActive(on:)) ?? false
         if wanted && !blocked {
             present()
+            keepOnActiveSpace()
         } else {
             dismiss()
         }
@@ -307,11 +370,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if wanted { startMouseTracking() } else { stopMouseTracking() }
     }
 
+    /// macOS sometimes parks the window on another Space and the app never
+    /// hears about it: the line is up everywhere except the desktop you are
+    /// on. Ordering it front again brings it back. From y0un922/tendedero.
+    private func keepOnActiveSpace() {
+        guard isPresent, isRevealed, !panel.isOnActiveSpace else { return }
+        log.notice("The line was parked on another Space: ordering it front again")
+        panel.orderFrontRegardless()
+    }
+
     private func present() {
         guard !isPresent else { return }
         isPresent = true
         panel.alphaValue = 1
-        panel.orderFrontRegardless()
+        // The window itself only comes in while the line is down; see setRevealed.
+        if isRevealed { panel.orderFrontRegardless() }
     }
 
     private func dismiss() {
@@ -336,6 +409,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard on != isRevealed else { return }
         isRevealed = on
         line.revealed = on
+        // Tucked away, the line leaves no window behind: an invisible strip
+        // over the top of the screen would still sit above other apps for
+        // anything that checks what is on top, like screen automation.
+        if on {
+            if isPresent { panel.orderFrontRegardless() }
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                guard let self, !self.isRevealed else { return }
+                self.panel.orderOut(nil)
+            }
+        }
         if !on {
             pinned = false
             peekUntil = .distantPast
@@ -446,6 +530,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         updateMousePassThrough(mouse)
+        keepOnActiveSpace()
 
         // The line's zone runs from its lowest point up to the top of the
         // screen, menu bar included, so moving up never hides it.

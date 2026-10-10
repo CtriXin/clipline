@@ -87,8 +87,12 @@ final class HoverPreview {
 
 private struct PreviewChrome: ViewModifier {
     func body(content: Content) -> some View {
+        // Solid, not glass: whatever is behind would show through the text.
         content
-            .glassFrame(cornerRadius: 14)
+            .background(Color(nsColor: .windowBackgroundColor),
+                        in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5))
             .shadow(color: .black.opacity(0.22), radius: 12, y: 6)
             .padding(16)   // room for the shadow inside the window
     }
