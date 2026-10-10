@@ -22,6 +22,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Space on the picture under the pointer. Registered only while the
     /// pointer rests on one, so Space keeps being Space everywhere else.
     private var previewHotKey: HotKey?
+    private let bagPanel = BagPanel()
+    private var bagAwaySince: Date?
     private let preview = HoverPreview()
     private var previewWork: DispatchWorkItem?
     private var signalSources: [DispatchSourceSignal] = []
@@ -83,6 +85,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         setUpStatusItem()
         watchMenuBarClicks()
+
+        line.$bagHovered
+            .receive(on: RunLoop.main)
+            .sink { [weak self] on in if on { self?.openBag() } }
+            .store(in: &cancellables)
+        Bag.shared.$pins
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                DispatchQueue.main.async { self?.bagPanel.refit() }
+            }
+            .store(in: &cancellables)
+        Bag.shared.$selectedGroup
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                DispatchQueue.main.async { self?.bagPanel.refit() }
+            }
+            .store(in: &cancellables)
+        // Something in the bag is reason enough for the line to answer the top edge.
+        if !Bag.shared.pins.isEmpty {
+            wanted = true
+            refresh()
+        }
 
         Previewer.shared.onClosed = { [weak self] in
             self?.updatePreviewHotKey(hovered: self?.line.hoveredID)
@@ -227,8 +251,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func itemsChanged() {
         let live = line.liveCount
         if live > lastLiveCount && !line.lastHangPeeks {
-            // A clip: it hangs quietly. Shown already, the line just grows.
+            // Copied text hangs quietly: the line does not come down, but it
+            // must be ready to, or the top edge would never bring it down.
             updateCapacity()
+            if !wanted {
+                wanted = true
+                refresh()
+            }
         } else if live > lastLiveCount {
             panel.placeOnScreen(pendingScreen)
             pendingScreen = nil
@@ -236,9 +265,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             wanted = true
             refresh()
             reveal(peekFor: 2.5)
-        } else if live == 0 && !keepOpen {
+        } else if live == 0 && !keepOpen && Bag.shared.pins.isEmpty {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
-                guard let self, self.line.liveCount == 0, !self.keepOpen else { return }
+                guard let self, self.line.liveCount == 0, !self.keepOpen, Bag.shared.pins.isEmpty else { return }
                 self.wanted = false
                 self.refresh()
             }
@@ -307,6 +336,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         previewWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+    }
+
+    // MARK: The bag
+
+    /// The bag's icon on screen, from where SwiftUI reported it in the panel.
+    private func bagIconFrame() -> CGRect? {
+        guard let r = line.hitRects[Line.bagIconID] else { return nil }
+        return CGRect(x: panel.frame.minX + r.minX, y: panel.frame.maxY - r.maxY, width: r.width, height: r.height)
+    }
+
+    private func openBag() {
+        guard isRevealed, let screen = panel.screen, let icon = bagIconFrame() else { return }
+        preview.hide()
+        bagAwaySince = nil
+        bagPanel.open(below: icon, on: screen)
+    }
+
+    /// Keeps the bag open while the pointer is on it or on its icon; closes
+    /// it a moment after the pointer leaves both. Returns whether it is in.
+    private func trackBag(_ mouse: NSPoint, now: Date) -> Bool {
+        guard bagPanel.isOpen else { return false }
+        let icon = bagIconFrame()?.insetBy(dx: -10, dy: -10) ?? .zero
+        // A modal prompt (rename, new group) is in front: leave the bag be.
+        if NSApp.modalWindow != nil { return true }
+        if NSMouseInRect(mouse, bagPanel.frame, false) || NSMouseInRect(mouse, icon, false) {
+            bagAwaySince = nil
+            return true
+        }
+        let since = bagAwaySince ?? now
+        bagAwaySince = since
+        if now.timeIntervalSince(since) >= 0.4 {
+            bagAwaySince = nil
+            bagPanel.close()
+            line.bagHovered = false
+        }
+        return false
     }
 
     // MARK: Quick Look
@@ -409,6 +474,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard on != isRevealed else { return }
         isRevealed = on
         line.revealed = on
+        if !on {
+            bagPanel.close()
+            line.bagHovered = false
+        }
         // Tucked away, the line leaves no window behind: an invisible strip
         // over the top of the screen would still sit above other apps for
         // anything that checks what is on top, like screen automation.
@@ -536,7 +605,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // screen, menu bar included, so moving up never hides it.
         var zone = panel.frame
         if let screen = panel.screen { zone.size.height = screen.frame.maxY - zone.minY }
-        let inside = NSMouseInRect(mouse, zone, false)
+        let inBag = trackBag(mouse, now: now)
+        let inside = NSMouseInRect(mouse, zone, false) || inBag
         if inside && pinned { pinned = false }
 
         let busy = pinned || GrabView.isDragging || line.pressedID != nil || now < peekUntil

@@ -50,6 +50,19 @@ struct GrabArea: NSViewRepresentable {
                 if Clips.link(of: url) != nil {
                     menu.addItem(ClosureMenuItem(L("Open link")) { line.open(id) })
                 }
+                // Keep it: into one of the bag's groups.
+                let bagItem = NSMenuItem(title: L("Put in the bag"), action: nil, keyEquivalent: "")
+                let groups = NSMenu()
+                let text = Clips.text(of: url) ?? ""
+                for g in Bag.shared.groups {
+                    groups.addItem(ClosureMenuItem(g) { Bag.shared.add(text, to: g) })
+                }
+                groups.addItem(.separator())
+                groups.addItem(ClosureMenuItem(L("New group…")) {
+                    if let name = askForText(L("New group")) { Bag.shared.add(text, to: name) }
+                })
+                bagItem.submenu = groups
+                menu.addItem(bagItem)
                 menu.addItem(.separator())
                 menu.addItem(ClosureMenuItem(L("Take down")) { line.discard(id) })
                 return menu

@@ -31,6 +31,9 @@ final class Line: ObservableObject {
     @Published var pressedID: UUID?
     /// The card under the pointer, for the large preview.
     @Published var hoveredID: UUID?
+    /// The pointer is on the bag at the end of the line.
+    @Published var bagHovered = false
+    static let bagIconID = UUID()
     /// Whether the line has slid down into view.
     @Published var revealed = false
 

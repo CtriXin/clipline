@@ -24,6 +24,7 @@ enum Layout {
 
 struct LineView: View {
     @ObservedObject var line: Line
+    @ObservedObject var bag = Bag.shared
 
     var body: some View {
         GeometryReader { geo in
@@ -36,6 +37,11 @@ struct LineView: View {
                         .position(x: width / 2, y: Layout.ropeY(x: width / 2, width: width) + 34)
                         .transition(.opacity)
                 }
+
+                // The bag hangs near the right end, where the rope fades out.
+                let bagX = width - 56
+                BagIcon(line: line, count: bag.pins.count)
+                    .position(x: bagX, y: Layout.ropeY(x: bagX, width: width) + 24)
 
                 ForEach(Array(line.items.enumerated()), id: \.element.id) { index, item in
                     let x = Layout.x(index: index, count: line.items.count, width: width)
@@ -56,6 +62,56 @@ struct LineView: View {
         .onPreferenceChange(HitRectsKey.self) { rects in
             line.hitRects = rects
         }
+    }
+}
+
+/// A small pouch on a short string. Rest on it to open it; drop a card's
+/// text on it to keep that text.
+private struct BagIcon: View {
+    @ObservedObject var line: Line
+    let count: Int
+    @State private var targeted = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Rectangle()
+                .fill(Color(white: 0.55))
+                .frame(width: 1, height: 12)
+            Image(systemName: "bag.fill")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.primary.opacity(0.75))
+                .frame(width: 28, height: 28)
+                .glassFrame(circle: true)
+                .overlay(alignment: .topTrailing) {
+                    if count > 0 {
+                        Text("\(count)")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 4)
+                            .frame(minWidth: 15, minHeight: 15)
+                            .background(Color.accentColor, in: Capsule())
+                            .offset(x: 5, y: -4)
+                    }
+                }
+                .scaleEffect(line.bagHovered || targeted ? 1.12 : 1)
+                .animation(.spring(response: 0.3, dampingFraction: 0.6), value: line.bagHovered || targeted)
+                .onHover { line.bagHovered = $0 }
+                .onTapGesture { line.bagHovered = true }
+                .dropDestination(for: String.self) { texts, _ in
+                    for t in texts {
+                        Bag.shared.add(t, to: Secrets.mask(t).1 ? Bag.secretGroup : Bag.defaultGroups[0])
+                    }
+                    line.bagHovered = true
+                    return !texts.isEmpty
+                } isTargeted: { targeted = $0 }
+                .background(
+                    GeometryReader { g in
+                        Color.clear.preference(key: HitRectsKey.self,
+                                               value: [Line.bagIconID: g.frame(in: .global)])
+                    }
+                )
+        }
+        .help(L("Bag"))
     }
 }
 

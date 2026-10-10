@@ -35,3 +35,17 @@
 
 "Hang clipboard" = "挂上剪贴板";
 "Open link" = "打开链接";
+"Bag" = "布袋";
+"Put in the bag" = "收进布袋";
+"New group…" = "新分组…";
+"New group" = "新分组";
+"Delete group" = "删除分组";
+"Rename…" = "重命名…";
+"Rename" = "重命名";
+"Move to" = "移到";
+"Remove from the bag" = "从布袋拿出（删除）";
+"OK" = "好";
+"Cancel" = "取消";
+"Right-click a card on the line › Put in the bag" = "右键绳上的卡片 › 收进布袋，或把卡片拖到布袋上";
+"Showing keys in full" = "正在显示密钥原文";
+"Click to copy · hold ⌥ to show keys" = "点一下复制 · 按住 ⌥ 显示原文";

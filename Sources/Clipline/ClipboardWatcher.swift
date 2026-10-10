@@ -213,6 +213,12 @@ enum Secrets {
         return (out as String, true)
     }
 
+    /// Hides the middle of the whole string, whatever it looks like.
+    static func conceal(_ s: String) -> String {
+        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.contains("\n") ? hideMiddle(String(t.prefix(while: { $0 != "\n" }))) + " …" : hideMiddle(t)
+    }
+
     private static func hideMiddle(_ s: String) -> String {
         if s.hasPrefix("-----BEGIN") { return "-----BEGIN PRIVATE KEY----- •••••• -----END PRIVATE KEY-----" }
         let c = Array(s)
