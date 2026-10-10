@@ -44,17 +44,27 @@ final class Line: ObservableObject {
     @Published var keyboardMode = false
     static let tabsID = UUID()
     static let moreLeftID = UUID()
-    /// The pointer brushing past a card: which one, and how hard (degrees).
-    let stirs = PassthroughSubject<(UUID, Double), Never>()
-    private var lastStir: [UUID: Date] = [:]
+    /// The pointer sweeping along the line, like a hand: where it is (in the
+    /// line's coordinates) and how fast it moves, + to the right. Cards ahead
+    /// of it lean with it; when it stops they swing back and settle.
+    struct Wind: Equatable {
+        var x: CGFloat
+        var speed: CGFloat
+        static let calm = Wind(x: 0, speed: 0)
+    }
+    @Published var wind = Wind.calm
 
-    /// Brushes a card, at most a few times a second, so a hand passing
-    /// through sets it swinging instead of jittering.
-    func stir(_ id: UUID, by degrees: Double) {
-        let now = Date()
-        if let last = lastStir[id], now.timeIntervalSince(last) < 0.28 { return }
-        lastStir[id] = now
-        stirs.send((id, degrees))
+    /// How far a card leans in this wind, in degrees.
+    static func lean(cardX: CGFloat, in wind: Wind) -> Double {
+        guard abs(wind.speed) > 60 else { return 0 }
+        let dir: CGFloat = wind.speed > 0 ? 1 : -1
+        // Only the cards ahead of the hand, and the one under it.
+        let ahead = (cardX - wind.x) * dir
+        guard ahead > -Layout.cardWidth / 2 else { return 0 }
+        let strength = min(13, abs(wind.speed) / 55)
+        let falloff = exp(-max(0, ahead) / 420)
+        // Pushed right, the bottom swings right: a negative angle.
+        return -Double(dir * strength * falloff)
     }
     static let moreRightID = UUID()
     /// How far a line too long for the screen has slid.

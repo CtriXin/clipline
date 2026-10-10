@@ -7,6 +7,9 @@ struct PeggedView: View {
     @ObservedObject var line: Line
     /// Slid past the end of the line: just peeking in, or gone.
     var edge: Layout.Edge = .inside
+    /// Where it hangs along the line, for leaning in the pointer's wind.
+    var x: CGFloat = 0
+    private var lean: Double { edge == .inside ? Line.lean(cardX: x, in: line.wind) : 0 }
     private var hidden: Bool { edge != .inside }
 
     @State private var swing: Double = 0
@@ -29,6 +32,11 @@ struct PeggedView: View {
                 .zIndex(1)
             card
         }
+        // The pointer's wind: a quick lean while it pushes, then a free swing
+        // back that wobbles a few times before it settles.
+        .rotationEffect(.degrees(lean), anchor: .top)
+        .animation(lean == 0 ? .interpolatingSpring(stiffness: 34, damping: 2.2)
+                             : .easeOut(duration: 0.18), value: lean)
         .rotationEffect(.degrees(swing + item.tilt), anchor: .top)
         .offset(y: arrived ? 0 : -46)
         // The fall itself is drawn over the whole screen by CaptureFlight, so
@@ -47,7 +55,7 @@ struct PeggedView: View {
         .onAppear(perform: arrive)
         .onChange(of: item.flying) { was, now in if was && !now { land() } }
         .onChange(of: line.gust) { _, _ in breeze() }
-        .onReceive(line.stirs) { id, degrees in if id == item.id { nudge(degrees) } }
+
         .onChange(of: copied) { _, isCopied in if isCopied { nudge(3) } }
     }
 

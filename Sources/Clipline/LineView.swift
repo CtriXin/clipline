@@ -74,7 +74,7 @@ struct LineView: View {
                 ForEach(Array(line.visible.enumerated()), id: \.element.id) { index, item in
                     let x = Layout.x(index: index, count: line.visible.count, width: width, scroll: line.scroll)
                     let ropeY = Layout.ropeY(x: x, width: width)
-                    PeggedView(item: item, line: line, edge: Layout.edge(x: x, width: width))
+                    PeggedView(item: item, line: line, edge: Layout.edge(x: x, width: width), x: x)
                         .frame(width: Layout.cardWidth, height: Layout.panelHeight - ropeY, alignment: .top)
                         .position(x: x, y: ropeY - Layout.pinAbove + (Layout.panelHeight - ropeY) / 2)
                 }
