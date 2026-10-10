@@ -117,7 +117,7 @@ struct PeggedView: View {
             }
             .overlay(alignment: .bottomLeading) {
                 // From the keyboard, each card shows the ⌘ number that copies it.
-                if line.keyboardMode, let n = shortcutNumber {
+                if line.keyboardMode || line.showShortcuts, let n = shortcutNumber {
                     Text("⌘\(n)")
                         .font(.system(size: 10, weight: .bold, design: .rounded))
                         .foregroundStyle(.primary)

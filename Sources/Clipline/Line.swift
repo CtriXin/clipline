@@ -50,6 +50,8 @@ final class Line: ObservableObject {
     @Published var revealSecrets = false { didSet { if revealSecrets != oldValue { rebuildPins() } } }
     /// Brought up from the keyboard: ⌘1–9 copy, Tab switches lines, Esc leaves.
     @Published var keyboardMode = false
+    /// ⌘ held over the lowered line: the cards show their ⌘ numbers.
+    @Published var showShortcuts = false
     static let tabsID = UUID()
     static let moreLeftID = UUID()
     /// The pointer sweeping along the line, like a hand: where it is (in the

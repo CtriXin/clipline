@@ -25,6 +25,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// ⌘1–9, Tab, Esc: registered only while the line is up from the
     /// keyboard, so they are never taken from other apps otherwise.
     private var keyboardKeys: [HotKey] = []
+    /// ⌘1–9 alone, while ⌘ is held over the line brought down by the mouse.
+    private var digitKeys: [HotKey] = []
     /// The pointer a tick ago, to tell how fast it sweeps across the line.
     private var lastPointer: (x: CGFloat, at: Date)?
     private var windSpeed: CGFloat = 0
@@ -365,20 +367,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func startKeyboardMode() {
         line.keyboardMode = true
         guard keyboardKeys.isEmpty else { return }
-        let digits = [kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3, kVK_ANSI_4, kVK_ANSI_5,
-                      kVK_ANSI_6, kVK_ANSI_7, kVK_ANSI_8, kVK_ANSI_9]
-        for (n, key) in digits.enumerated() {
-            keyboardKeys.append(HotKey(keyCode: key, modifiers: cmdKey) { [weak self] in
-                guard let self, self.line.copy(at: n) else { NSSound.beep(); return }
-                // Copied: out of the way, so it can be pasted at once.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in self?.tuckAway() }
-            })
-        }
+        keyboardKeys.append(contentsOf: makeDigitKeys())
         keyboardKeys.append(HotKey(keyCode: kVK_Tab, modifiers: 0) { [weak self] in self?.line.nextShelf() })
         keyboardKeys.append(HotKey(keyCode: kVK_Tab, modifiers: shiftKey) { [weak self] in self?.line.nextShelf(-1) })
         keyboardKeys.append(HotKey(keyCode: kVK_Escape, modifiers: 0) { [weak self] in self?.tuckAway() })
         keyboardKeys.append(HotKey(keyCode: kVK_RightArrow, modifiers: 0) { [weak self] in self?.line.page(1) })
         keyboardKeys.append(HotKey(keyCode: kVK_LeftArrow, modifiers: 0) { [weak self] in self?.line.page(-1) })
+    }
+
+    /// ⌘1–9: copy the card shown in that place, then get out of the way so
+    /// it can be pasted at once.
+    private func makeDigitKeys() -> [HotKey] {
+        let digits = [kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3, kVK_ANSI_4, kVK_ANSI_5,
+                      kVK_ANSI_6, kVK_ANSI_7, kVK_ANSI_8, kVK_ANSI_9]
+        return digits.enumerated().map { n, key in
+            HotKey(keyCode: key, modifiers: cmdKey) { [weak self] in
+                guard let self, self.line.copy(at: n) else { NSSound.beep(); return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in self?.tuckAway() }
+            }
+        }
+    }
+
+    /// Holding ⌘ with the pointer at the lowered line shows each card's
+    /// number and lets ⌘1–9 copy it, without bringing it down from the
+    /// keyboard first. Elsewhere, ⌘1–9 stay with the other apps.
+    private func updateCommandHold(inside: Bool) {
+        let flags = NSEvent.modifierFlags.intersection([.command, .option, .control, .shift])
+        let holding = flags == .command && inside && !line.keyboardMode
+        if holding != line.showShortcuts { line.showShortcuts = holding }
+        if holding && digitKeys.isEmpty {
+            digitKeys = makeDigitKeys()
+        } else if !holding && !digitKeys.isEmpty {
+            digitKeys.removeAll()
+        }
     }
 
     private func stopKeyboardMode() {
@@ -500,6 +521,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         line.revealed = on
         if !on {
             calmWind()
+            updateCommandHold(inside: false)
             stopKeyboardMode()
             // Next time it comes down on its own, it shows what is new.
             line.shelf = .recent
@@ -674,6 +696,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var zone = panel.frame
         if let screen = panel.screen { zone.size.height = screen.frame.maxY - zone.minY }
         let inside = NSMouseInRect(mouse, zone, false)
+        updateCommandHold(inside: inside)
         // Option held shows keys in full, on the cards and in the preview.
         let option = NSEvent.modifierFlags.contains(.option)
         if line.revealSecrets != option && (line.keyboardMode || inside) { line.revealSecrets = option }
