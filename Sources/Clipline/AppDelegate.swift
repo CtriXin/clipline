@@ -58,8 +58,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if Inbox.isEnabled { Inbox.apply() }
         restoreSettingsOnTermination()
         startWatcher()
+        // Images on the clipboard are mostly screenshots taken with a tool
+        // that copies instead of saving: they hang like screenshots and bring
+        // the line down. Text is copied all day long, so it hangs quietly.
         clipWatcher = ClipboardWatcher { [weak self] url in
-            self?.line.hang(url, quietly: true, peek: false)
+            if Clips.isText(url) {
+                self?.line.hang(url, quietly: true, peek: false)
+            } else {
+                self?.hangCapture(url)
+            }
         }
         if Clips.isEnabled { clipWatcher?.start() }
 

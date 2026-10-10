@@ -77,15 +77,15 @@ final class Line: ObservableObject {
         item.flying = flying
         lastHangPeeks = peek
         items.append(item)
-        // A full line lets the oldest card fall off the far end. Screenshots
-        // and clips each keep half the line, so a burst of copies cannot
+        // A full line lets the oldest card fall off the far end. Pictures
+        // and text each keep half the line, so a burst of copied text cannot
         // push every screenshot off, nor the other way round.
         while liveCount > maxItems {
             let live = items.filter { !$0.falling }
-            let isClip = Clips.contains(url)
-            let same = live.filter { Clips.contains($0.url) == isClip }
+            let isText = Clips.isText(url)
+            let same = live.filter { Clips.isText($0.url) == isText }
             let victim = same.count > maxItems / 2 ? same.first
-                : live.first { Clips.contains($0.url) != isClip }
+                : live.first { Clips.isText($0.url) != isText }
             guard let victim else { break }
             drop(victim.id, quietly: true)
         }
