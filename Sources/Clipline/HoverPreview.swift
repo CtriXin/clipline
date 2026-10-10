@@ -10,7 +10,11 @@ final class HoverPreview {
     private var shownURL: URL?
     private var model: PreviewModel?
 
-    fileprivate static let maxBody = CGSize(width: 432, height: 290)
+    /// Pictures stay this size at most; text gets all the height there is.
+    fileprivate static let maxPicture = CGSize(width: 520, height: 380)
+    fileprivate static let maxTextWidth: CGFloat = 540
+    /// Header, footer, padding and the room for the shadow around the text.
+    private static let chrome: CGFloat = 130
 
     init() {
         panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
@@ -27,17 +31,20 @@ final class HoverPreview {
     /// Shows the preview for a card, below `card` (screen coordinates), with
     /// its pointer at `cardX`.
     func show(_ url: URL, below card: CGRect, pointingAt cardX: CGFloat, on screen: NSScreen) {
+        let visible = screen.visibleFrame
         if shownURL != url {
             guard let model = Self.model(for: url) else { return hide() }
             self.model = model
-            let host = NSHostingView(rootView: AnyView(PreviewView(model: model)))
-            host.sizingOptions = [.intrinsicContentSize]
+            // Text is laid out here, at the size it will be shown, so the
+            // window fits it exactly: all of it when the screen has room.
+            let room = card.minY - 4 - visible.minY - 8 - Self.chrome
+            let layout = model.image == nil ? TextLayout(model.text, maxWidth: Self.maxTextWidth, maxHeight: room) : nil
+            let host = NSHostingView(rootView: PreviewView(model: model, layout: layout))
             panel.contentView = host
             panel.setContentSize(host.fittingSize)
             shownURL = url
         }
         let size = panel.frame.size
-        let visible = screen.visibleFrame
         var x = cardX - size.width / 2
         x = min(max(x, visible.minX + 8), visible.maxX - size.width - 8)
         let y = max(card.minY - 4 - size.height, visible.minY + 8)
@@ -63,13 +70,14 @@ final class HoverPreview {
             guard let raw = pinned ? pin?.text : Clips.text(of: url) else { return nil }
             // Keys show in full only while Option is held.
             let (text, hidden) = NSEvent.modifierFlags.contains(.option) ? (raw, false) : Secrets.mask(raw)
-            let limit = 1500
+            let limit = 6000
+            let shown = text.trimmingCharacters(in: .whitespacesAndNewlines)
             return PreviewModel(
                 kind: Clips.link(of: url) != nil ? .link : .text,
                 title: pin?.title,
                 source: pin?.source ?? Clips.source(of: url),
-                text: text.count > limit ? String(text.prefix(limit)) : text,
-                more: max(0, text.count - limit),
+                text: shown.count > limit ? String(shown.prefix(limit)) : shown,
+                more: max(0, shown.count - limit),
                 masked: hidden,
                 image: nil,
                 pixels: nil)
@@ -104,6 +112,7 @@ private struct PreviewModel {
 /// the content, and what you can do with it.
 private struct PreviewView: View {
     let model: PreviewModel
+    let layout: TextLayout?
 
     private static let radius: CGFloat = 20
     private static let margin: CGFloat = 28
@@ -164,7 +173,7 @@ private struct PreviewView: View {
     }
 
     @ViewBuilder private var content: some View {
-        let limit = HoverPreview.maxBody
+        let limit = HoverPreview.maxPicture
         if let image = model.image {
             let s = image.size
             let scale = min(limit.width / s.width, limit.height / s.height, 1)
@@ -174,21 +183,20 @@ private struct PreviewView: View {
                 .frame(width: s.width * scale, height: s.height * scale)
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .padding(10)
-        } else {
+        } else if let layout {
             Text(model.text)
                 .font(.system(size: 14))
                 .foregroundStyle(model.kind == .link ? Color.accentColor : .primary)
-                .lineSpacing(3)
+                .lineSpacing(TextLayout.spacing)
                 .multilineTextAlignment(.leading)
                 // Whole lines only: never a line sliced through the middle.
-                .lineLimit(Self.maxLines)
+                .lineLimit(layout.isCut ? layout.lines : nil)
                 .truncationMode(.tail)
-                .frame(maxWidth: limit.width, alignment: .leading)
-                .fixedSize(horizontal: false, vertical: true)
+                .frame(width: layout.size.width, height: layout.size.height, alignment: .topLeading)
                 // A long clip fades out at the bottom instead of a hard cut.
                 .mask {
                     LinearGradient(stops: [.init(color: .black, location: 0.8),
-                                           .init(color: .black.opacity(isLong ? 0 : 1), location: 1)],
+                                           .init(color: .black.opacity(layout.isCut || model.more > 0 ? 0.15 : 1), location: 1)],
                                    startPoint: .top, endPoint: .bottom)
                 }
                 .padding(.horizontal, 16)
@@ -209,10 +217,6 @@ private struct PreviewView: View {
         .padding(.bottom, 10)
     }
 
-    private static let maxLines = 13
-
-    /// Taller than the preview, or cut short: some of it is not shown.
-    private var isLong: Bool { model.more > 0 || model.text.count > 600 || model.text.split(separator: "\n").count > Self.maxLines }
 
     private var icon: String {
         if model.masked { return "lock.fill" }
@@ -236,5 +240,44 @@ private struct PreviewView: View {
         if let p = model.pixels { return "\(Int(p.width)) × \(Int(p.height))" }
         if model.kind == .picture { return "" }
         return String(format: L("%d characters"), model.text.count + model.more)
+    }
+}
+
+/// The text measured the way it is drawn: how wide, how many lines fit in
+/// the room below the line, and how tall those lines are.
+struct TextLayout {
+    static let fontSize: CGFloat = 14
+    static let spacing: CGFloat = 3
+
+    let size: CGSize
+    let lines: Int
+    /// Not every line fits: the rest is left out.
+    let isCut: Bool
+
+    init(_ text: String, maxWidth: CGFloat, maxHeight: CGFloat) {
+        let style = NSMutableParagraphStyle()
+        style.lineSpacing = Self.spacing
+        let storage = NSTextStorage(string: text.isEmpty ? " " : text,
+                                    attributes: [.font: NSFont.systemFont(ofSize: Self.fontSize), .paragraphStyle: style])
+        let manager = NSLayoutManager()
+        let container = NSTextContainer(size: CGSize(width: maxWidth, height: .greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        manager.addTextContainer(container)
+        storage.addLayoutManager(manager)
+        manager.ensureLayout(for: container)
+
+        // Each line's bottom, top to bottom: keep as many as fit.
+        var bottoms: [CGFloat] = []
+        var width: CGFloat = 0
+        manager.enumerateLineFragments(forGlyphRange: manager.glyphRange(for: container)) { _, used, _, _, _ in
+            bottoms.append(used.maxY)
+            width = max(width, used.width)
+        }
+        let fit = max(1, bottoms.lastIndex { $0 <= max(maxHeight, 0) }.map { $0 + 1 } ?? 1)
+        lines = min(fit, bottoms.count)
+        isCut = lines < bottoms.count
+        // A little slack: SwiftUI and AppKit round lines a hair differently.
+        size = CGSize(width: ceil(min(max(width, 200), maxWidth)) + 2,
+                      height: ceil(bottoms[lines - 1]) + 4)
     }
 }
