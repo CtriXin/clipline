@@ -50,13 +50,7 @@ struct PeggedView: View {
         // It fades out towards the screen edge, nothing laid over the desktop.
         .scaleEffect(peeking ? 0.94 : 1, anchor: .top)
         .blur(radius: peeking ? 0.8 : 0)
-        .mask(
-            LinearGradient(stops: peeking ? [.init(color: .black.opacity(0.7), location: 0),
-                                             .init(color: .clear, location: 0.85)]
-                                          : [.init(color: .black, location: 0), .init(color: .black, location: 1)],
-                           startPoint: edge == .peekLeading ? .trailing : .leading,
-                           endPoint: edge == .peekLeading ? .leading : .trailing)
-        )
+        .modifier(PeekFade(edge: edge))
         .opacity(edge == .gone ? 0 : 1)
         .allowsHitTesting(!hidden)
         .animation(.easeOut(duration: 0.2), value: edge)
@@ -248,5 +242,25 @@ struct Clothespin: View {
             }
             .shadow(color: .black.opacity(0.30), radius: 2, y: 1.5)
             .allowsHitTesting(false)
+    }
+}
+
+/// Fades a peeking card out towards the screen edge. Only a peeking card
+/// gets a mask at all: a mask clips to the view's own upright frame, and
+/// would cut off the corners of a card swinging on the line.
+private struct PeekFade: ViewModifier {
+    let edge: Layout.Edge
+    func body(content: Content) -> some View {
+        if edge == .peekLeading || edge == .peekTrailing {
+            content.mask(
+                LinearGradient(stops: [.init(color: .black.opacity(0.7), location: 0),
+                                       .init(color: .clear, location: 0.85)],
+                               startPoint: edge == .peekLeading ? .trailing : .leading,
+                               endPoint: edge == .peekLeading ? .leading : .trailing)
+                    .padding(-40)
+            )
+        } else {
+            content
+        }
     }
 }
