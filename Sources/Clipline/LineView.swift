@@ -32,7 +32,8 @@ struct LineView: View {
         GeometryReader { geo in
             let width = geo.size.width
             ZStack(alignment: .topLeading) {
-                Rope(width: width)
+                Rope(width: width, tint: line.shelf.tint)
+                    .animation(.easeInOut(duration: 0.25), value: line.shelf)
 
                 ShelfTabs(line: line, bag: bag)
                     .position(x: 12 + 95, y: Layout.ropeTop + 30)
@@ -121,13 +122,13 @@ private struct ShelfTabs: View {
                     Image(systemName: "lock.fill").font(.system(size: 8))
                 }
                 Text(title).lineLimit(1)
-                if count > 0 { Text("\(count)").foregroundStyle(.secondary) }
+                if count > 0 { Text("\(count)").opacity(selected ? 0.85 : 0.6) }
             }
             .font(.system(size: 11, weight: selected ? .bold : .medium))
-            .padding(.horizontal, 7)
+            .foregroundStyle(selected ? Color.white : Color.primary.opacity(0.55))
+            .padding(.horizontal, 8)
             .padding(.vertical, 3)
-            .background(selected ? Color.accentColor.opacity(0.28) : Color.clear, in: Capsule())
-            .glassFrame(capsule: true)
+            .modifier(TabChrome(selected: selected, tint: shelf.tint ?? Color(white: 0.4)))
         }
         .buttonStyle(.plain)
         .dropDestination(for: String.self) { texts, _ in
@@ -143,6 +144,32 @@ private struct ShelfTabs: View {
             if case .group(let g) = shelf, !Bag.defaultGroups.contains(g), bag.pins(in: g).isEmpty {
                 Button(L("Delete group")) { bag.removeGroup(g) }
             }
+        }
+    }
+}
+
+/// The selected tag is solid, in its line's colour; the others stay faint glass.
+private struct TabChrome: ViewModifier {
+    let selected: Bool
+    let tint: Color
+    func body(content: Content) -> some View {
+        if selected {
+            content
+                .background(tint, in: Capsule())
+                .shadow(color: tint.opacity(0.45), radius: 4, y: 1)
+        } else {
+            content.glassFrame(capsule: true).opacity(0.85)
+        }
+    }
+}
+
+extension Line.Shelf {
+    /// Recent keeps the plain rope; keys are orange, other groups the accent.
+    var tint: Color? {
+        switch self {
+        case .recent: return nil
+        case .group(Bag.secretGroup): return .orange
+        case .group: return .accentColor
         }
     }
 }
@@ -165,6 +192,8 @@ private struct Hint: View {
 /// both ends so it seems to come from beyond the screen.
 struct Rope: View {
     let width: CGFloat
+    /// Your own lines are coloured, so it is clear which one is up.
+    var tint: Color? = nil
 
     private var path: Path {
         Path { p in
@@ -179,7 +208,7 @@ struct Rope: View {
     var body: some View {
         ZStack {
             path.stroke(Color.black.opacity(0.22), lineWidth: 1.4).offset(y: 1.2).blur(radius: 1.2)
-            path.stroke(Color(white: 0.55), lineWidth: 1.2)
+            path.stroke(tint ?? Color(white: 0.55), lineWidth: tint == nil ? 1.2 : 2)
             path.stroke(Color.white.opacity(0.45), lineWidth: 0.4).offset(y: -0.35)
         }
         .mask(
