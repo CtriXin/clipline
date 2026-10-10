@@ -158,13 +158,16 @@ final class ClipboardWatcher {
         let types = Set((pb.types ?? []).map(\.rawValue))
         guard types.isDisjoint(with: Self.skipTypes) else { return }
 
-        // Copying an image file in Finder: hang the file itself.
+        // Copying an image file in Finder: hang the file itself. A file we
+        // may not read, like one inside WeChat's own container, is skipped:
+        // the picture data next to it, if any, hangs instead.
         if let urls = pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL],
            !urls.isEmpty {
-            for url in urls where Self.imageExtensions.contains(url.pathExtension.lowercased()) {
-                onNew(url)
+            let readable = urls.filter { Self.imageExtensions.contains($0.pathExtension.lowercased()) && Self.canRead($0) }
+            if !readable.isEmpty || urls.count != urls.filter({ Self.imageExtensions.contains($0.pathExtension.lowercased()) }).count {
+                readable.forEach(onNew)
+                return
             }
-            return
         }
 
         // Image data: a screenshot sent to the clipboard, or "Copy Image".
@@ -181,6 +184,14 @@ final class ClipboardWatcher {
             if text.count > Self.maxTextLength { text = String(text.prefix(Self.maxTextLength)) }
             onNew(Clips.storeText(text, source: source(of: pb)))
         }
+    }
+
+    /// Opening is the only honest test: macOS refuses another app's
+    /// container at open time, whatever the file's permissions say.
+    static func canRead(_ url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        try? handle.close()
+        return true
     }
 
     /// Where a copy came from: Chromium browsers attach the page's address,
