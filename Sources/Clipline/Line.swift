@@ -33,7 +33,9 @@ final class Line: ObservableObject {
     @Published var hoveredID: UUID?
     /// Which line is up: the recent one (screenshots and the clipboard) or
     /// one of your own groups. Switching swaps the whole line.
-    @Published var shelf: Shelf = .recent { didSet { if shelf != oldValue { rebuildPins() } } }
+    @Published var shelf: Shelf = .recent {
+        didSet { if shelf != oldValue { scroll = 0; rebuildPins() } }
+    }
     /// The current group's pins, hung as cards.
     @Published private(set) var pinCards: [Pegged] = []
     /// Option held: keys on the cards show in full.
@@ -41,6 +43,10 @@ final class Line: ObservableObject {
     /// Brought up from the keyboard: ⌘1–9 copy, Tab switches lines, Esc leaves.
     @Published var keyboardMode = false
     static let tabsID = UUID()
+    /// How far a line too long for the screen has slid.
+    @Published private(set) var scroll: CGFloat = 0
+    /// The panel's width, for the scrolling limits.
+    var width: CGFloat = 0
 
     /// What hangs on the line right now.
     var visible: [Pegged] { shelf == .recent ? items : pinCards }
@@ -97,7 +103,7 @@ final class Line: ObservableObject {
         }
         if !Bag.shared.groups.contains(g) { shelf = .recent; return }
         let bag = Bag.shared
-        pinCards = bag.pins(in: g).prefix(maxItems).map { pin in
+        pinCards = bag.pins(in: g).map { pin in
             let value = revealSecrets ? pin.text : bag.shown(pin)
             let thumb = makePinCard(title: pin.title, value: value, locked: bag.isSecret(pin) && !revealSecrets)
             var peg = pinPegs[pin.id] ?? Pegged(url: URL(string: "clipline-pin://\(pin.id.uuidString)")!, thumb: thumb)
@@ -114,10 +120,34 @@ final class Line: ObservableObject {
         return Bag.shared.pins.first { $0.id == key }
     }
 
+    // MARK: Sliding
+
+    /// Trackpad or wheel: slide the line, within its ends.
+    func scroll(by delta: CGFloat) {
+        let limit = Layout.maxScroll(count: visible.filter { !$0.falling }.count, width: width)
+        let next = min(max(scroll + delta, 0), limit)
+        if next != scroll { scroll = next }
+    }
+
+    /// ← →: a screenful at a time, landing on a whole card.
+    func page(_ direction: Int) {
+        let perPage = max(1, Int(Layout.usable(width: width) / Layout.spacing))
+        let target = CGFloat(firstShown + direction * perPage) * Layout.spacing
+        let limit = Layout.maxScroll(count: visible.filter { !$0.falling }.count, width: width)
+        scroll = min(max(target, 0), limit)
+    }
+
+    /// The first card fully on the line; ⌘1 copies it.
+    var firstShown: Int {
+        guard Layout.maxScroll(count: visible.filter { !$0.falling }.count, width: width) > 0 else { return 0 }
+        return Int((scroll / Layout.spacing).rounded(.up))
+    }
+
     /// ⌘1–9: copy the card in that place.
     @discardableResult
     func copy(at index: Int) -> Bool {
         let live = visible.filter { !$0.falling }
+        let index = firstShown + index
         guard live.indices.contains(index) else { return false }
         copy(live[index].id)
         return true

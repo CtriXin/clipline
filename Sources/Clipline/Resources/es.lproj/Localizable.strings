@@ -47,8 +47,15 @@
 "Hang on" = "Colgar en";
 "Take off this line" = "Quitar de esta cuerda";
 "Empty line: right-click a card on Recent › Hang on" = "Cuerda vacía: clic derecho en una tarjeta de Recientes › Colgar en";
-"⇥ switch line · ⌘1–9 copy · hold ⌥ show keys · esc" = "⇥ cambiar · ⌘1–9 copiar · ⌥ ver claves · esc";
+"⇥ switch line · ⌘1–9 copy · hold ⌥ show keys · esc" = "⇥ cambiar · ← → deslizar · ⌘1–9 copiar · ⌥ ver claves · esc";
 "What is this? (site, account or use)" = "¿Qué es? (sitio, cuenta o uso)";
 "Take “%@” off “%@”?" = "¿Quitar «%@» de «%@»?";
 "It is deleted from the Keychain and cannot be brought back." = "Se borra del llavero y no se puede recuperar.";
 "Take off" = "Quitar";
+"Shortcut: %@…" = "Atajo: %@…";
+"Press the new shortcut" = "Pulsa el nuevo atajo";
+"Hold ⌃, ⌥ or ⌘ with a key. It brings the line down ready for the keyboard." = "Mantén ⌃, ⌥ o ⌘ con una tecla. Baja la cuerda lista para el teclado.";
+"Save" = "Guardar";
+"Reset to ⌃⌥T" = "Volver a ⌃⌥T";
+"%@ is already used by another app" = "%@ ya lo usa otra app";
+"Keeping %@. Try a different combination." = "Se mantiene %@. Prueba otra combinación.";

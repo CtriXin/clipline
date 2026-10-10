@@ -30,6 +30,7 @@ struct GrabArea: NSViewRepresentable {
         view.url = item.url
         view.dragImage = item.thumb
         view.onClick = { line.copy(id) }
+        view.onScroll = { line.scroll(by: $0) }
         view.onDoubleClick = { line.open(id) }
         view.onDragStart = { line.draggingID = id }
         view.onDragEnd = {
@@ -111,6 +112,7 @@ final class GrabView: NSView, NSDraggingSource {
     var url: URL?
     var dragImage: NSImage?
     var onClick: () -> Void = {}
+    var onScroll: (CGFloat) -> Void = { _ in }
     var onDoubleClick: () -> Void = {}
     var onDragStart: () -> Void = {}
     var onDragEnd: () -> Void = {}
@@ -140,6 +142,14 @@ final class GrabView: NSView, NSDraggingSource {
         let corner = NSRect(x: 0, y: isFlipped ? 0 : bounds.height - Self.crossHitSize,
                             width: Self.crossHitSize, height: Self.crossHitSize)
         return corner.contains(p)
+    }
+
+    /// Sideways on a trackpad, or an ordinary wheel, slides the line.
+    override func scrollWheel(with event: NSEvent) {
+        let dx = event.scrollingDeltaX, dy = event.scrollingDeltaY
+        var delta = abs(dx) > abs(dy) ? -dx : -dy
+        if !event.hasPreciseScrollingDeltas { delta *= 12 }
+        onScroll(delta)
     }
 
     override func mouseDown(with event: NSEvent) {

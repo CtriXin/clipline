@@ -5,6 +5,8 @@ import SwiftUI
 struct PeggedView: View {
     let item: Pegged
     @ObservedObject var line: Line
+    /// Slid past the end of the line: not shown, not clickable.
+    var hidden = false
 
     @State private var swing: Double = 0
     @State private var arrived = false
@@ -12,8 +14,10 @@ struct PeggedView: View {
 
     private var copied: Bool { line.copiedID == item.id }
     private var shortcutNumber: Int? {
-        guard let i = line.visible.filter({ !$0.falling }).firstIndex(where: { $0.id == item.id }), i < 9 else { return nil }
-        return i + 1
+        let live = line.visible.filter { !$0.falling }
+        guard let i = live.firstIndex(where: { $0.id == item.id }) else { return nil }
+        let n = i - line.firstShown
+        return (0..<9).contains(n) ? n + 1 : nil
     }
     private var dragging: Bool { line.draggingID == item.id }
     private var pressed: Bool { line.pressedID == item.id }
@@ -31,6 +35,9 @@ struct PeggedView: View {
         .opacity(item.falling || item.flying ? 0 : (arrived ? 1 : 0))
         .transaction { t in if item.falling { t.animation = nil } }
         .animation(.easeOut(duration: 0.16), value: item.flying)
+        .opacity(hidden ? 0 : 1)
+        .allowsHitTesting(!hidden)
+        .animation(.easeOut(duration: 0.15), value: hidden)
         .onAppear(perform: arrive)
         .onChange(of: item.flying) { was, now in if was && !now { land() } }
         .onChange(of: line.gust) { _, _ in breeze() }
@@ -125,7 +132,7 @@ struct PeggedView: View {
             .background(
                 GeometryReader { g in
                     Color.clear.preference(key: HitRectsKey.self,
-                                           value: item.falling ? [:] : [item.id: g.frame(in: .global)])
+                                           value: item.falling || hidden ? [:] : [item.id: g.frame(in: .global)])
                 }
             )
     }

@@ -47,8 +47,15 @@
 "Hang on" = "挂到";
 "Take off this line" = "从这根绳上取下（删除）";
 "Empty line: right-click a card on Recent › Hang on" = "这根绳还空着：在「最近」里右键卡片 › 挂到";
-"⇥ switch line · ⌘1–9 copy · hold ⌥ show keys · esc" = "⇥ 换绳 · ⌘1–9 复制 · 按住 ⌥ 看原文 · esc 收起";
+"⇥ switch line · ⌘1–9 copy · hold ⌥ show keys · esc" = "⇥ 换绳 · ← → 滑动 · ⌘1–9 复制 · 按住 ⌥ 看原文 · esc 收起";
 "What is this? (site, account or use)" = "这是什么？（网站 / 账号 / 用途）";
 "Take “%@” off “%@”?" = "把「%@」从「%@」取下？";
 "It is deleted from the Keychain and cannot be brought back." = "会从钥匙串中删除，无法恢复。";
 "Take off" = "取下";
+"Shortcut: %@…" = "唤出快捷键：%@…";
+"Press the new shortcut" = "按下新的快捷键";
+"Hold ⌃, ⌥ or ⌘ with a key. It brings the line down ready for the keyboard." = "按住 ⌃、⌥ 或 ⌘ 再按一个键。它会唤出晾衣绳并进入键盘操作。";
+"Save" = "保存";
+"Reset to ⌃⌥T" = "恢复为 ⌃⌥T";
+"%@ is already used by another app" = "%@ 已被其他 app 占用";
+"Keeping %@. Try a different combination." = "继续使用 %@，换个组合试试。";

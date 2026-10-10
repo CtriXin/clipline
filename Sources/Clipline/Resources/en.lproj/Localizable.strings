@@ -49,8 +49,15 @@
 "Hang on" = "Hang on";
 "Take off this line" = "Take off this line";
 "Empty line: right-click a card on Recent › Hang on" = "Empty line: right-click a card on Recent › Hang on";
-"⇥ switch line · ⌘1–9 copy · hold ⌥ show keys · esc" = "⇥ switch line · ⌘1–9 copy · hold ⌥ show keys · esc";
+"⇥ switch line · ⌘1–9 copy · hold ⌥ show keys · esc" = "⇥ switch line · ← → slide · ⌘1–9 copy · hold ⌥ show keys · esc";
 "What is this? (site, account or use)" = "What is this? (site, account or use)";
 "Take “%@” off “%@”?" = "Take “%@” off “%@”?";
 "It is deleted from the Keychain and cannot be brought back." = "It is deleted from the Keychain and cannot be brought back.";
 "Take off" = "Take off";
+"Shortcut: %@…" = "Shortcut: %@…";
+"Press the new shortcut" = "Press the new shortcut";
+"Hold ⌃, ⌥ or ⌘ with a key. It brings the line down ready for the keyboard." = "Hold ⌃, ⌥ or ⌘ with a key. It brings the line down ready for the keyboard.";
+"Save" = "Save";
+"Reset to ⌃⌥T" = "Reset to ⌃⌥T";
+"%@ is already used by another app" = "%@ is already used by another app";
+"Keeping %@. Try a different combination." = "Keeping %@. Try a different combination.";

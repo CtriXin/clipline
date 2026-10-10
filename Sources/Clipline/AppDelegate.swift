@@ -80,9 +80,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if Clips.isEnabled { clipWatcher?.start() }
 
-        hotKey = HotKey(keyCode: kVK_ANSI_T, modifiers: controlKey | optionKey) { [weak self] in
-            self?.summon()
-        }
+        registerSummon(Shortcut.saved)
 
         setUpStatusItem()
         watchMenuBarClicks()
@@ -344,6 +342,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         keyboardKeys.append(HotKey(keyCode: kVK_Tab, modifiers: 0) { [weak self] in self?.line.nextShelf() })
         keyboardKeys.append(HotKey(keyCode: kVK_Tab, modifiers: shiftKey) { [weak self] in self?.line.nextShelf(-1) })
         keyboardKeys.append(HotKey(keyCode: kVK_Escape, modifiers: 0) { [weak self] in self?.tuckAway() })
+        keyboardKeys.append(HotKey(keyCode: kVK_RightArrow, modifiers: 0) { [weak self] in self?.line.page(1) })
+        keyboardKeys.append(HotKey(keyCode: kVK_LeftArrow, modifiers: 0) { [weak self] in self?.line.page(-1) })
     }
 
     private func stopKeyboardMode() {
@@ -399,7 +399,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let shown = line.visible
         guard let index = shown.firstIndex(where: { $0.id == id }) else { return nil }
         let width = panel.frame.width
-        let x = Layout.x(index: index, count: shown.count, width: width)
+        let x = Layout.x(index: index, count: shown.count, width: width, scroll: line.scroll)
         let viewTop = Layout.ropeY(x: x, width: width) - Layout.pinAbove
         let cardTop = viewTop + PeggedView.cardOffsetBelowTop
         let size = PeggedView.cardSize(for: shown[index].thumb.size)
@@ -483,6 +483,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             pinned = false
             peekUntil = .distantPast
             panel.ignoresMouseEvents = true
+        }
+    }
+
+    /// Registers the shortcut that brings the line down. Returns false when
+    /// the system refuses it, usually because another app already has it.
+    @discardableResult
+    private func registerSummon(_ shortcut: Shortcut) -> Bool {
+        hotKey = nil
+        let key = HotKey(keyCode: shortcut.keyCode, modifiers: shortcut.modifiers) { [weak self] in
+            self?.summon()
+        }
+        hotKey = key
+        return key.isRegistered
+    }
+
+    private func changeSummon() {
+        let old = Shortcut.saved
+        // Off while recording, so pressing the current one does not fire it.
+        hotKey = nil
+        guard let new = recordShortcut(current: old), new != old else {
+            registerSummon(old)
+            return
+        }
+        if registerSummon(new) {
+            Shortcut.saved = new
+        } else {
+            registerSummon(old)
+            let alert = NSAlert()
+            alert.messageText = String(format: L("%@ is already used by another app"), new.display)
+            alert.informativeText = String(format: L("Keeping %@. Try a different combination."), old.display)
+            alert.runModal()
         }
     }
 
@@ -638,7 +669,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func updateCapacity() {
-        let usable = panel.frame.width - 2 * Layout.tabsReserve
+        let usable = Layout.usable(width: panel.frame.width)
+        line.width = panel.frame.width
         line.maxItems = max(3, min(12, Int(usable / Layout.spacing)))
     }
 
@@ -660,8 +692,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let toggleItem = ClosureMenuItem(isRevealed ? L("Hide line") : L("Show line")) { [weak self] in
             self?.toggle()
         }
-        toggleItem.keyEquivalent = "t"
-        toggleItem.keyEquivalentModifierMask = [.control, .option]
+        let shortcut = Shortcut.saved
+        toggleItem.keyEquivalent = shortcut.key.count == 1 ? shortcut.key.lowercased() : ""
+        toggleItem.keyEquivalentModifierMask = shortcut.menuModifiers
         menu.addItem(toggleItem)
 
         let clearItem = ClosureMenuItem(L("Take everything down")) { [weak self] in
@@ -690,6 +723,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         })
 
         menu.addItem(.separator())
+
+        menu.addItem(ClosureMenuItem(String(format: L("Shortcut: %@…"), Shortcut.saved.display)) { [weak self] in
+            self?.changeSummon()
+        })
 
         let sound = ClosureMenuItem(L("Sounds")) { [weak self] in
             guard let self else { return }

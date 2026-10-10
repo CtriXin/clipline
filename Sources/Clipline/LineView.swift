@@ -18,9 +18,28 @@ enum Layout {
         return ropeTop + 4 * sag(width: width) * f * (1 - f)
     }
 
-    static func x(index: Int, count: Int, width: CGFloat) -> CGFloat {
+    /// The stretch of rope cards may use, between the tabs at either end.
+    static func usable(width: CGFloat) -> CGFloat { width - 2 * tabsReserve }
+
+    /// How far a line too long for the screen can slide.
+    static func maxScroll(count: Int, width: CGFloat) -> CGFloat {
+        let span = CGFloat(max(count - 1, 0)) * spacing + cardWidth
+        return max(0, span - usable(width: width))
+    }
+
+    /// Where a card hangs. A line that fits is centred; a longer one starts
+    /// after the tabs and slides by `scroll`.
+    static func x(index: Int, count: Int, width: CGFloat, scroll: CGFloat = 0) -> CGFloat {
         let total = CGFloat(max(count - 1, 0)) * spacing
-        return width / 2 - total / 2 + CGFloat(index) * spacing
+        guard maxScroll(count: count, width: width) > 0 else {
+            return width / 2 - total / 2 + CGFloat(index) * spacing
+        }
+        return tabsReserve + cardWidth / 2 + CGFloat(index) * spacing - scroll
+    }
+
+    /// A card slid past either end of the usable stretch is put away.
+    static func isOffLine(x: CGFloat, width: CGFloat) -> Bool {
+        x < tabsReserve + cardWidth / 2 - 2 || x > width - tabsReserve - cardWidth / 2 + 2
     }
 }
 
@@ -45,14 +64,16 @@ struct LineView: View {
                 }
 
                 ForEach(Array(line.visible.enumerated()), id: \.element.id) { index, item in
-                    let x = Layout.x(index: index, count: line.visible.count, width: width)
+                    let x = Layout.x(index: index, count: line.visible.count, width: width, scroll: line.scroll)
+                    let off = Layout.isOffLine(x: x, width: width)
                     let ropeY = Layout.ropeY(x: x, width: width)
-                    PeggedView(item: item, line: line)
+                    PeggedView(item: item, line: line, hidden: off)
                         .frame(width: Layout.cardWidth, height: Layout.panelHeight - ropeY, alignment: .top)
                         .position(x: x, y: ropeY - Layout.pinAbove + (Layout.panelHeight - ropeY) / 2)
                 }
             }
             .animation(.spring(response: 0.55, dampingFraction: 0.78), value: line.visible.map(\.id))
+            .animation(.interactiveSpring(response: 0.3, dampingFraction: 0.86), value: line.scroll)
             .animation(.easeInOut(duration: 0.3), value: line.visible.isEmpty)
             // Tucked away, the whole line waits above the top edge and slides
             // out from under the menu bar, the way an auto-hiding Dock does.

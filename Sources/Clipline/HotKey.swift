@@ -4,6 +4,8 @@ import Carbon
 /// monitor, they need no Accessibility permission.
 final class HotKey {
     private var ref: EventHotKeyRef?
+    /// False when the system refused it, usually because another app has it.
+    private(set) var isRegistered = false
     private let id: UInt32
 
     /// One entry per live shortcut, so the line's own shortcut and the Space
@@ -18,7 +20,8 @@ final class HotKey {
         Self.actions[id] = action
         Self.installHandler()
         let hotKeyID = EventHotKeyID(signature: OSType(0x5445_4E44), id: id) // "TEND"
-        RegisterEventHotKey(UInt32(keyCode), UInt32(modifiers), hotKeyID, GetApplicationEventTarget(), 0, &ref)
+        let status = RegisterEventHotKey(UInt32(keyCode), UInt32(modifiers), hotKeyID, GetApplicationEventTarget(), 0, &ref)
+        isRegistered = status == noErr
     }
 
     deinit {
