@@ -72,21 +72,16 @@ struct LineView: View {
         GeometryReader { geo in
             let width = geo.size.width
             ZStack(alignment: .topLeading) {
-                // Under everything: the whole strip takes drops. It only gets
-                // the mouse while something is being dragged over it.
+                // Under everything, so the gaps between cards take drops too.
+                // The panel only gets the mouse while something is dragged over it.
                 Color.clear
                     .contentShape(Rectangle())
-                    .onDrop(of: LineDrop.types, delegate: LineDrop(line: line, width: width))
 
                 Rope(width: width, tint: line.dropTargeted ? .accentColor : line.shelf.tint)
                     .animation(.easeInOut(duration: 0.25), value: line.shelf)
                     .animation(.easeInOut(duration: 0.2), value: line.dropTargeted)
 
-                if line.dropTargeted {
-                    DropHint()
-                        .position(x: width / 2, y: Layout.ropeY(x: width / 2, width: width) + 34)
-                        .transition(.opacity.combined(with: .scale(scale: 0.9)))
-                } else if line.visible.isEmpty {
+                if line.visible.isEmpty && !line.dropTargeted {
                     Hint(shelf: line.shelf)
                         .position(x: width / 2, y: Layout.ropeY(x: width / 2, width: width) + 34)
                         .transition(.opacity)
@@ -123,7 +118,17 @@ struct LineView: View {
                 // Above the cards and the frost, so the tags stay sharp and clickable.
                 ShelfTabs(line: line, bag: bag)
                     .position(x: 12 + 95, y: Layout.ropeTop + 30)
+
+                // On top of the cards, or they would hide it.
+                if line.dropTargeted {
+                    DropHint()
+                        .position(x: width / 2, y: Layout.ropeY(x: width / 2, width: width) + 40)
+                        .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                }
             }
+            // On the whole line rather than a layer under it: a drop over a
+            // card reaches it too, since a card has no drop target of its own.
+            .onDrop(of: LineDrop.types, delegate: LineDrop(line: line, width: width))
             .animation(.spring(response: 0.55, dampingFraction: 0.78), value: line.visible.map(\.id))
             .animation(.interactiveSpring(response: 0.3, dampingFraction: 0.86), value: line.scroll)
             .animation(.easeInOut(duration: 0.3), value: line.visible.isEmpty)

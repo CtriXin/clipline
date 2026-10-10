@@ -66,3 +66,6 @@
 "Fast" = "快";
 "Normal" = "正常";
 "Slow" = "慢";
+"Clipline cannot read this picture" = "Clipline 读不到这张图片";
+"The app it came from keeps it in its own protected folder. Give Clipline Full Disk Access to drop pictures from apps like WeChat, or copy the picture (⌘C) instead: copied pictures hang without it." = "这张图存在来源 app 自己的受保护文件夹里。给 Clipline 开启「完全磁盘访问权限」后，就能从微信这类 app 直接拖图上绳；或者改用复制（⌘C），复制的图片不需要这个权限也会挂上。";
+"Open Settings" = "打开设置";

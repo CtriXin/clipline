@@ -68,3 +68,6 @@
 "Fast" = "Fast";
 "Normal" = "Normal";
 "Slow" = "Slow";
+"Clipline cannot read this picture" = "Clipline cannot read this picture";
+"The app it came from keeps it in its own protected folder. Give Clipline Full Disk Access to drop pictures from apps like WeChat, or copy the picture (⌘C) instead: copied pictures hang without it." = "The app it came from keeps it in its own protected folder. Give Clipline Full Disk Access to drop pictures from apps like WeChat, or copy the picture (⌘C) instead: copied pictures hang without it.";
+"Open Settings" = "Open Settings";
