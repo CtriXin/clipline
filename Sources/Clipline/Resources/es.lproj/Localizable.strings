@@ -94,3 +94,10 @@
 "Link" = "Enlace";
 "Picture" = "Imagen";
 "%d characters" = "%d caracteres";
+"Middle of the menu bar" = "Centro de la barra de menús";
+"Whole menu bar" = "Toda la barra de menús";
+"Off (shortcut only)" = "Desactivado (solo atajo)";
+"Short" = "Corto";
+"Long" = "Largo";
+"Bring it down by resting the pointer on" = "Bajarlo al dejar el puntero en";
+"How long it rests there" = "Cuánto tiempo";

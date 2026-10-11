@@ -723,11 +723,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         panel.ignoresMouseEvents = true
     }
 
-    /// How long the cursor rests against the top edge before the line comes
-    /// down. Short enough to feel instant, long enough that a quick trip to
-    /// the menu bar does not trigger it.
-    private static let revealDelay: TimeInterval = 0.25
-
     /// The menu bar strip at the top of a screen. With an auto-hiding menu
     /// bar the visible frame reaches the top, so the system thickness is used.
     static func menuBarBand(of screen: NSScreen) -> NSRect {
@@ -774,10 +769,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // Pushing against the top edge is part of it, and it also works
             // when another display sits above and the pointer never stops.
             if let screen = screenUnderPointer, inMenuBar, !menuBarSuppressed,
+               let area = HotZone.saved.area(in: Self.menuBarBand(of: screen)),
+               NSMouseInRect(mouse, area, false),
                !FullScreen.isActive(on: screen) {
                 let since = hotZoneSince ?? now
                 hotZoneSince = since
-                if now.timeIntervalSince(since) >= Self.revealDelay {
+                if now.timeIntervalSince(since) >= HotZone.Delay.saved.rawValue {
                     hotZoneSince = nil
                     if panel.screen != screen {
                         panel.placeOnScreen()

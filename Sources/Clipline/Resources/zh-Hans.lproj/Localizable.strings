@@ -94,3 +94,10 @@
 "Link" = "链接";
 "Picture" = "图片";
 "%d characters" = "%d 字";
+"Middle of the menu bar" = "菜单栏中间（刘海附近）";
+"Whole menu bar" = "整条菜单栏";
+"Off (shortcut only)" = "关闭（只用快捷键）";
+"Short" = "短";
+"Long" = "长";
+"Bring it down by resting the pointer on" = "鼠标停在哪里放下绳子";
+"How long it rests there" = "停留多久";

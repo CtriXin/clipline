@@ -59,6 +59,8 @@ private struct SettingsView: View {
     let actions: SettingsActions
 
     @State private var shortcut = Shortcut.saved.display
+    @State private var zone = HotZone.saved
+    @State private var delay = HotZone.Delay.saved
     @State private var inbox = Inbox.isEnabled
     @State private var clipboard = Clips.isEnabled
     @State private var sound = true
@@ -80,6 +82,17 @@ private struct SettingsView: View {
                             shortcut = Shortcut.saved.display
                         }
                     }
+                }
+                Picker(L("Bring it down by resting the pointer on"), selection: $zone) {
+                    ForEach(HotZone.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                .onChange(of: zone) { _, z in HotZone.saved = z }
+                if zone != .off {
+                    Picker(L("How long it rests there"), selection: $delay) {
+                        ForEach(HotZone.Delay.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: delay) { _, d in HotZone.Delay.saved = d }
                 }
                 Picker(L("Line speed"), selection: $line.pace) {
                     ForEach(Line.Pace.allCases, id: \.self) { Text($0.title).tag($0) }
