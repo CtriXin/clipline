@@ -349,10 +349,15 @@ final class Line: ObservableObject {
         let pb = NSPasteboard.general
         pb.clearContents()
         if Clips.isText(item.url) {
-            pb.setString(Clips.text(of: item.url) ?? "", forType: .string)
+            let text = Clips.text(of: item.url) ?? ""
+            pb.setString(text, forType: .string)
+            CrossSync.shared.pushText(text)
         } else {
             let entry = NSPasteboardItem()
-            if let png = pngData(item.url) { entry.setData(png, forType: .png) }
+            if let png = pngData(item.url) {
+                entry.setData(png, forType: .png)
+                CrossSync.shared.pushImage(png)
+            }
             entry.setString(item.url.absoluteString, forType: .fileURL)
             pb.writeObjects([entry])
         }

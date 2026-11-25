@@ -1,5 +1,7 @@
 .build/
 build/
+windows/build/
+android/build/
 .DS_Store
 *.xcodeproj
 .swiftpm/

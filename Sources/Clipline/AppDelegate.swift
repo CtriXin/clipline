@@ -98,7 +98,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self?.hangCapture(url)
             }
         }
+        clipWatcher?.onCaptured = { text, pngData in
+            if let text { CrossSync.shared.pushText(text) }
+            if let pngData { CrossSync.shared.pushImage(pngData) }
+        }
         if Clips.isEnabled { clipWatcher?.start() }
+
+        CrossSync.shared.onRemoteClip = { [weak self] url, isImage in
+            if isImage {
+                self?.hangCapture(url)
+            } else {
+                self?.line.hang(url, quietly: true, peek: false)
+            }
+        }
+        CrossSync.shared.startIfEnabled()
 
         registerSummon(Shortcut.saved)
         updateDragWatch()
@@ -887,6 +900,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(ClosureMenuItem(L("Open screenshots folder")) { [weak self] in
             guard let self else { return }
             NSWorkspace.shared.open(self.watcher.folder)
+        })
+
+        menu.addItem(.separator())
+
+        let sync = CrossSync.shared
+        let syncTitle: String
+        if !sync.isEnabled {
+            syncTitle = "跨设备同步：已关闭"
+        } else if case .connected = sync.state {
+            syncTitle = "跨设备同步：已连接（\(max(1, sync.onlineDevices.count)) 台在线）"
+        } else {
+            syncTitle = "跨设备同步：\(sync.state.label)"
+        }
+        let syncItem = ClosureMenuItem(syncTitle) {
+            sync.isEnabled.toggle()
+        }
+        syncItem.state = sync.isEnabled ? .on : .off
+        menu.addItem(syncItem)
+
+        menu.addItem(ClosureMenuItem("配对新设备（二维码）…") { [weak self] in
+            self?.showSettings()
         })
 
         menu.addItem(.separator())

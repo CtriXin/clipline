@@ -134,6 +134,19 @@ struct PeggedView: View {
             }
             .animation(.spring(response: 0.25, dampingFraction: 0.6), value: line.keyboardMode || line.showShortcuts)
             .overlay(GrabArea(item: item, line: line))
+            .overlay(alignment: .bottomLeading) {
+                if let remoteDevice = Clips.device(of: item.url), !copied {
+                    Text(remoteDevice)
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2.5)
+                        .glassFrame(capsule: true)
+                        .padding(6)
+                        .allowsHitTesting(false)
+                }
+            }
             .overlay(alignment: .bottom) {
                 if copied {
                     Label(L("Copied"), systemImage: "checkmark")

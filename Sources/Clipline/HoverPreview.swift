@@ -89,7 +89,7 @@ final class HoverPreview {
            let w = props[kCGImagePropertyPixelWidth] as? Int, let h = props[kCGImagePropertyPixelHeight] as? Int {
             pixels = CGSize(width: w, height: h)
         }
-        return PreviewModel(kind: .picture, title: nil, source: nil, text: "", more: 0,
+        return PreviewModel(kind: .picture, title: nil, source: Clips.device(of: url), text: "", more: 0,
                             masked: false, image: image, pixels: pixels)
     }
 }

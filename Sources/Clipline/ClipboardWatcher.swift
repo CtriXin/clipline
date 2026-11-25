@@ -23,6 +23,8 @@ enum Clips {
     nonisolated(unsafe) private static var texts: [String: String] = [:]
     /// Where each text was copied from: a site, or the app.
     nonisolated(unsafe) private static var sources: [String: String] = [:]
+    /// Remote device badge for clips synced from another device via CrossSync.
+    nonisolated(unsafe) private static var remoteDevices: [String: String] = [:]
 
     static func storeText(_ text: String, source: String? = nil) -> URL {
         let key = UUID().uuidString
@@ -33,7 +35,16 @@ enum Clips {
 
     static func source(of url: URL) -> String? { isText(url) ? sources[url.host ?? ""] : nil }
 
+    static func setDevice(_ device: String, for url: URL) {
+        remoteDevices[url.absoluteString] = device
+    }
+
+    static func device(of url: URL) -> String? {
+        remoteDevices[url.absoluteString]
+    }
+
     static func forget(_ url: URL) {
+        remoteDevices[url.absoluteString] = nil
         if isText(url) {
             texts[url.host ?? ""] = nil
             sources[url.host ?? ""] = nil
@@ -64,6 +75,7 @@ enum Clips {
     static func wipe() {
         texts.removeAll()
         sources.removeAll()
+        remoteDevices.removeAll()
         try? FileManager.default.removeItem(at: folder)
     }
 
@@ -115,6 +127,8 @@ enum Clips {
 @MainActor
 final class ClipboardWatcher {
     private let onNew: (URL) -> Void
+    /// Optional hook for CrossSync outbound sync (text or PNG image bytes).
+    var onCaptured: ((String?, Data?) -> Void)?
     private var timer: Timer?
     private var lastCount = NSPasteboard.general.changeCount
     private var lastImageHash: String?
@@ -175,6 +189,7 @@ final class ClipboardWatcher {
             let hash = SHA256.hash(data: png).map { String(format: "%02x", $0) }.joined()
             guard hash != lastImageHash else { return }
             lastImageHash = hash
+            onCaptured?(nil, png)
             if let url = Clips.save(png) { onNew(url) }
             return
         }
@@ -182,6 +197,7 @@ final class ClipboardWatcher {
         if var text = pb.string(forType: .string),
            !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             if text.count > Self.maxTextLength { text = String(text.prefix(Self.maxTextLength)) }
+            onCaptured?(text, nil)
             onNew(Clips.storeText(text, source: source(of: pb)))
         }
     }

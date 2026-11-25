@@ -1,0 +1,25 @@
+name: Build Android Clipline APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'android/**'
+      - '.github/workflows/build-android.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Build Clipline.apk
+        run: bash android/build.sh
+      - name: Upload Clipline.apk
+        uses: actions/upload-artifact@v4
+        with:
+          name: Clipline-android-apk
+          path: android/build/Clipline.apk
