@@ -74,8 +74,37 @@ namespace Pegline
         public static readonly string InboxFolder = System.IO.Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Pegline", "Screenshots");
 
+        /// Transient folder for remote synced clipboard items; wiped on startup and deleted when dropped.
+        public static readonly string SyncTempFolder = System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Pegline", "SyncTemp");
+
+        public static bool IsTransientSyncFile(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return false;
+            try
+            {
+                string dir = System.IO.Path.GetFullPath(SyncTempFolder).TrimEnd('\\') + "\\";
+                return System.IO.Path.GetFullPath(path).StartsWith(dir, StringComparison.OrdinalIgnoreCase);
+            }
+            catch (Exception) { return false; }
+        }
+
+        public static void WipeSyncTemp()
+        {
+            try
+            {
+                if (!Directory.Exists(SyncTempFolder)) return;
+                foreach (var f in Directory.GetFiles(SyncTempFolder))
+                {
+                    try { File.Delete(f); } catch (Exception) { }
+                }
+            }
+            catch (Exception) { }
+        }
+
         public Line()
         {
+            WipeSyncTemp();
             Restore();
             gustTimer.Tick += delegate
             {
@@ -154,6 +183,10 @@ namespace Pegline
             After(0.6, delegate
             {
                 Items.Remove(item);
+                if (IsTransientSyncFile(item.Path))
+                {
+                    try { File.Delete(item.Path); } catch (Exception) { }
+                }
                 Notify();
             });
         }
@@ -403,6 +436,8 @@ namespace Pegline
         /// The corner cross and "Take down" both end up here.
         public void Discard(Guid id)
         {
+            var item = Find(id);
+            if (item != null && IsTransientSyncFile(item.Path)) { Drop(id); return; }
             if (IsOwn(id)) Trash(id); else Drop(id);
         }
 
@@ -489,7 +524,7 @@ namespace Pegline
 
         void Save()
         {
-            Settings.Pegged = Items.Where(i => !i.Falling).Select(i => i.Path).ToArray();
+            Settings.Pegged = Items.Where(i => !i.Falling && !IsTransientSyncFile(i.Path)).Select(i => i.Path).ToArray();
         }
 
         void Restore()

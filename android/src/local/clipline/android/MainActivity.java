@@ -2,6 +2,7 @@ package local.clipline.android;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
@@ -97,10 +98,22 @@ public final class MainActivity extends Activity {
 
     private void handleDeepLink(Intent intent) {
         if (intent == null || intent.getData() == null) return;
-        if (SyncPrefs.importPairing(this, intent.getData().toString())) {
-            ClipSyncService.startOrStop(this);
-            Toast.makeText(this, "已通过链接完成配对", Toast.LENGTH_SHORT).show();
-        }
+        final String raw = intent.getData().toString();
+        String[] parsed = SyncPrefs.parsePairing(raw);
+        if (parsed == null) return;
+        final String targetHub = parsed[0];
+        new AlertDialog.Builder(this)
+                .setTitle("确认配对到同步主机？")
+                .setMessage("目标地址：\n" + targetHub + "\n\n确认后，本机剪贴板将同步到此服务器。若非您本人发起，请点取消。")
+                .setPositiveButton("确认配对", (d, which) -> {
+                    if (SyncPrefs.importPairing(this, raw)) {
+                        ClipSyncService.startOrStop(this);
+                        Toast.makeText(this, "已完成配对，正在连接…", Toast.LENGTH_SHORT).show();
+                        refreshUi();
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
     }
 
     private void requestNotifIfNeeded() {

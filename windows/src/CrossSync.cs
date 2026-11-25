@@ -102,7 +102,7 @@ namespace Pegline
                     string hub = File.ReadAllText(hubFile).Trim();
                     if (!string.IsNullOrEmpty(tok) && !string.IsNullOrEmpty(hub))
                     {
-                        Settings.SetString("sync.token", tok);
+                        Token = tok;
                         if (string.IsNullOrEmpty(Settings.GetString("sync.hubURL")))
                             Settings.SetString("sync.hubURL", hub);
                         Settings.Set("sync.enabled", true);
@@ -147,8 +147,42 @@ namespace Pegline
 
         public string Token
         {
-            get { return Settings.GetString("sync.token") ?? ""; }
-            set { Settings.SetString("sync.token", (value ?? "").Trim()); }
+            get
+            {
+                string raw = Settings.GetString("sync.token") ?? "";
+                if (string.IsNullOrEmpty(raw)) return "";
+                if (raw.StartsWith("dpapi:", StringComparison.Ordinal))
+                {
+                    try
+                    {
+                        byte[] enc = Convert.FromBase64String(raw.Substring(6));
+                        byte[] plain = ProtectedData.Unprotect(enc, null, DataProtectionScope.CurrentUser);
+                        return Encoding.UTF8.GetString(plain);
+                    }
+                    catch (Exception) { return ""; }
+                }
+                // Migrate legacy plaintext token to DPAPI automatically
+                Token = raw;
+                return raw;
+            }
+            set
+            {
+                string v = (value ?? "").Trim();
+                if (string.IsNullOrEmpty(v))
+                {
+                    Settings.SetString("sync.token", "");
+                    return;
+                }
+                try
+                {
+                    byte[] enc = ProtectedData.Protect(Encoding.UTF8.GetBytes(v), null, DataProtectionScope.CurrentUser);
+                    Settings.SetString("sync.token", "dpapi:" + Convert.ToBase64String(enc));
+                }
+                catch (Exception)
+                {
+                    Settings.SetString("sync.token", v);
+                }
+            }
         }
 
         public string DeviceName
@@ -239,8 +273,23 @@ namespace Pegline
             get
             {
                 if (string.IsNullOrEmpty(Token)) return ShareableHubURL;
-                return ShareableHubURL.TrimEnd('/') + "/?pair=" + Uri.EscapeDataString(Token);
+                return ShareableHubURL.TrimEnd('/') + "/#pair=" + Uri.EscapeDataString(Token);
             }
+        }
+
+        static string ExtractPairParam(string rawPart)
+        {
+            if (string.IsNullOrEmpty(rawPart)) return null;
+            foreach (var kv in rawPart.Split('&'))
+            {
+                int idx = kv.IndexOf('=');
+                if (idx > 0 && kv.Substring(0, idx) == "pair")
+                {
+                    string tok = Uri.UnescapeDataString(kv.Substring(idx + 1)).Trim();
+                    if (!string.IsNullOrWhiteSpace(tok)) return tok;
+                }
+            }
+            return null;
         }
 
         public bool ImportPairing(string raw)
@@ -267,24 +316,17 @@ namespace Pegline
             try
             {
                 var uri = new Uri(s);
-                string query = uri.Query.TrimStart('?');
-                foreach (var kv in query.Split('&'))
+                string tok = ExtractPairParam(uri.Fragment.TrimStart('#'))
+                          ?? ExtractPairParam(uri.Query.TrimStart('?'));
+                if (!string.IsNullOrWhiteSpace(tok))
                 {
-                    int idx = kv.IndexOf('=');
-                    if (idx > 0 && kv.Substring(0, idx) == "pair")
-                    {
-                        string tok = Uri.UnescapeDataString(kv.Substring(idx + 1));
-                        if (!string.IsNullOrWhiteSpace(tok))
-                        {
-                            string baseUrl = uri.GetLeftPart(UriPartial.Path).TrimEnd('/');
-                            Settings.Set("sync.hostMode", false);
-                            HubURL = baseUrl;
-                            Token = tok;
-                            Settings.Set("sync.enabled", true);
-                            Restart();
-                            return true;
-                        }
-                    }
+                    string baseUrl = uri.GetLeftPart(UriPartial.Path).TrimEnd('/');
+                    Settings.Set("sync.hostMode", false);
+                    HubURL = baseUrl;
+                    Token = tok;
+                    Settings.Set("sync.enabled", true);
+                    Restart();
+                    return true;
                 }
             }
             catch (Exception) { }
@@ -835,22 +877,6 @@ namespace Pegline
                     if (idx > 0) headers[lines[i].Substring(0, idx).Trim()] = lines[i].Substring(idx + 1).Trim();
                 }
 
-                int contentLen = 0;
-                string clStr;
-                if (headers.TryGetValue("Content-Length", out clStr)) int.TryParse(clStr, out contentLen);
-                if (contentLen > 16 * 1024 * 1024) { WriteResp(stream, "413 Payload Too Large", "text/plain", Encoding.UTF8.GetBytes("too large")); return; }
-
-                byte[] body = new byte[contentLen];
-                int copied = Math.Min(extra.Length, contentLen);
-                if (copied > 0) Buffer.BlockCopy(extra, 0, body, 0, copied);
-                int off = copied;
-                while (off < contentLen)
-                {
-                    int r = stream.Read(body, off, contentLen - off);
-                    if (r <= 0) break;
-                    off += r;
-                }
-
                 string path = target;
                 var query = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 int qIdx = target.IndexOf('?');
@@ -878,6 +904,29 @@ namespace Pegline
                 {
                     WriteResp(stream, "401 Unauthorized", "text/plain", Encoding.UTF8.GetBytes("unauthorized"));
                     return;
+                }
+
+                int contentLen = 0;
+                string clStr;
+                if (headers.TryGetValue("Content-Length", out clStr))
+                {
+                    if (!int.TryParse(clStr, out contentLen) || contentLen < 0)
+                    {
+                        WriteResp(stream, "400 Bad Request", "text/plain", Encoding.UTF8.GetBytes("bad content-length"));
+                        return;
+                    }
+                }
+                if (contentLen > 16 * 1024 * 1024) { WriteResp(stream, "413 Payload Too Large", "text/plain", Encoding.UTF8.GetBytes("too large")); return; }
+
+                byte[] body = new byte[contentLen];
+                int copied = Math.Min(extra.Length, contentLen);
+                if (copied > 0) Buffer.BlockCopy(extra, 0, body, 0, copied);
+                int off = copied;
+                while (off < contentLen)
+                {
+                    int r = stream.Read(body, off, contentLen - off);
+                    if (r <= 0) break;
+                    off += r;
                 }
 
                 if (method == "GET" && path == "/api/devices")
@@ -1087,6 +1136,6 @@ namespace Pegline
             s.Flush();
         }
 
-        const string MiniHTML = "<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Clipline Sync</title><style>body{font-family:sans-serif;max-width:680px;margin:0 auto;padding:16px;background:#111;color:#eee}textarea{width:100%;padding:10px;border-radius:10px;border:1px solid #333;background:#1c1f26;color:#fff;box-sizing:border-box}button{padding:10px 14px;border-radius:10px;border:0;background:#4c8dff;color:#fff;font-weight:600;margin:6px 6px 6px 0}.card{background:#1c1f26;border-radius:12px;padding:12px;margin:10px 0;white-space:pre-wrap}</style></head><body><h3>Clipline 跨设备剪贴板</h3><textarea id='t' rows='3' placeholder='输入文字发送...'></textarea><div><button onclick='send()'>发送</button><button onclick='pull()'>复制最新</button></div><div id='h'></div><script>const p=new URLSearchParams(location.search);if(p.get('pair')){localStorage.cs_tok=p.get('pair');history.replaceState(null,'','/');}const tok=localStorage.cs_tok||prompt('Token')||'';localStorage.cs_tok=tok;const hdr={'Authorization':'Bearer '+tok,'X-Device':'mobile-web','X-Platform':'web'};async function load(){const r=await fetch('api/history',{headers:hdr});if(!r.ok)return;const a=await r.json();document.getElementById('h').innerHTML=a.map(x=>'<div class=card><small>'+x.device+'</small><br>'+(x.kind==='text'?x.text.replace(/</g,'&lt;'):'[图片]')+'</div>').join('');}async function send(){const v=document.getElementById('t').value;if(!v)return;await fetch('api/clip',{method:'POST',headers:hdr,body:v});document.getElementById('t').value='';load();}async function pull(){const r=await fetch('api/clip?raw=1',{headers:hdr});if(r.ok){const s=await r.text();navigator.clipboard&&navigator.clipboard.writeText(s);alert('已获取: '+s.slice(0,60));}}load();new EventSource('api/events?token='+encodeURIComponent(tok)+'&device=mobile-web&platform=web').addEventListener('clip',load);</script></body></html>";
+        const string MiniHTML = "<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Clipline Sync</title><style>body{font-family:sans-serif;max-width:680px;margin:0 auto;padding:16px;background:#111;color:#eee}textarea{width:100%;padding:10px;border-radius:10px;border:1px solid #333;background:#1c1f26;color:#fff;box-sizing:border-box}button{padding:10px 14px;border-radius:10px;border:0;background:#4c8dff;color:#fff;font-weight:600;margin:6px 6px 6px 0}.card{background:#1c1f26;border-radius:12px;padding:12px;margin:10px 0;white-space:pre-wrap}</style></head><body><h3>Clipline 跨设备剪贴板</h3><textarea id='t' rows='3' placeholder='输入文字发送...'></textarea><div><button onclick='send()'>发送</button><button onclick='pull()'>复制最新</button></div><div id='h'></div><script>const hp=new URLSearchParams(location.hash.replace(/^#/,'')),sp=new URLSearchParams(location.search),pt=hp.get('pair')||sp.get('pair');if(pt){localStorage.cs_tok=pt;history.replaceState(null,'',location.pathname);}const tok=localStorage.cs_tok||prompt('Token')||'';localStorage.cs_tok=tok;const esc=s=>String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');const hdr={'Authorization':'Bearer '+tok,'X-Device':'mobile-web','X-Platform':'web'};async function load(){const r=await fetch('api/history',{headers:hdr});if(!r.ok)return;const a=await r.json();document.getElementById('h').innerHTML=a.map(x=>'<div class=card><small>'+esc(x.device)+'</small><br>'+(x.kind==='text'?esc(x.text):'[图片]')+'</div>').join('');}async function send(){const v=document.getElementById('t').value;if(!v)return;await fetch('api/clip',{method:'POST',headers:hdr,body:v});document.getElementById('t').value='';load();}async function pull(){const r=await fetch('api/clip?raw=1',{headers:hdr});if(r.ok){const s=await r.text();navigator.clipboard&&navigator.clipboard.writeText(s);alert('已获取: '+s.slice(0,60));}}load();new EventSource('api/events?token='+encodeURIComponent(tok)+'&device=mobile-web&platform=web').addEventListener('clip',load);</script></body></html>";
     }
 }

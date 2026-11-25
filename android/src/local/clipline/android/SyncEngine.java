@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicLong;
 
 public final class SyncEngine {
     public static final class DeviceInfo {
@@ -61,6 +62,7 @@ public final class SyncEngine {
     private final List<DeviceInfo> onlineDevices = new ArrayList<>();
     private final List<ClipRecord> history = new ArrayList<>();
 
+    private final AtomicLong generation = new AtomicLong(0);
     private volatile boolean running = false;
     private volatile String status = "未开启";
     private volatile boolean connected = false;
@@ -116,17 +118,19 @@ public final class SyncEngine {
             notifyListeners();
             return;
         }
+        final long myGen = generation.incrementAndGet();
         running = true;
         status = "连接中…";
         connected = false;
         notifyListeners();
         final String dev = SyncPrefs.getDeviceName(appCtx);
-        Thread t = new Thread(() -> sseLoop(hubs, tok, dev), "CliplineSSE");
+        Thread t = new Thread(() -> sseLoop(myGen, hubs, tok, dev), "CliplineSSE-" + myGen);
         t.setDaemon(true);
         t.start();
     }
 
     public synchronized void stop() {
+        generation.incrementAndGet();
         running = false;
         connected = false;
         HttpURLConnection c = currentConn;
@@ -215,9 +219,13 @@ public final class SyncEngine {
         } catch (Exception ignored) {}
     }
 
-    private void sseLoop(List<String> hubs, String tok, String dev) {
+    private boolean isCurrent(long gen) {
+        return running && generation.get() == gen;
+    }
+
+    private void sseLoop(long gen, List<String> hubs, String tok, String dev) {
         int idx = 0;
-        while (running) {
+        while (isCurrent(gen)) {
             String base = hubs.get(idx % hubs.size());
             idx++;
             HttpURLConnection conn = null;
@@ -228,9 +236,11 @@ public final class SyncEngine {
                 conn.setConnectTimeout(10000);
                 conn.setReadTimeout(45000);
                 conn.setRequestProperty("Authorization", "Bearer " + tok);
+                if (!isCurrent(gen)) break;
                 currentConn = conn;
 
                 int code = conn.getResponseCode();
+                if (!isCurrent(gen)) break;
                 if (code != 200) {
                     connected = false;
                     status = (code == 401) ? "Token 无效" : ("HTTP " + code);
@@ -247,7 +257,7 @@ public final class SyncEngine {
                 try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
                     String evType = "";
                     String line;
-                    while (running && (line = br.readLine()) != null) {
+                    while (isCurrent(gen) && (line = br.readLine()) != null) {
                         if (line.startsWith("event:")) {
                             evType = line.substring(6).trim();
                         } else if (line.startsWith("data:")) {
@@ -258,16 +268,16 @@ public final class SyncEngine {
                     }
                 }
             } catch (Exception ignored) {
-                if (running) {
+                if (isCurrent(gen)) {
                     connected = false;
                     status = "重连中…";
                     notifyListeners();
                 }
             } finally {
                 if (conn != null) try { conn.disconnect(); } catch (Exception ignored) {}
-                currentConn = null;
+                if (currentConn == conn) currentConn = null;
             }
-            if (running) sleepQuiet(2500);
+            if (isCurrent(gen)) sleepQuiet(2500);
         }
     }
 

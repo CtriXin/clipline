@@ -49,8 +49,8 @@ public final class SyncPrefs {
         prefs(ctx).edit().putString("device_name", v == null ? "" : v.trim()).apply();
     }
 
-    public static boolean importPairing(Context ctx, String raw) {
-        if (raw == null) return false;
+    public static String[] parsePairing(String raw) {
+        if (raw == null) return null;
         String s = raw.trim();
         if (s.startsWith("clipsync://")) {
             try {
@@ -59,28 +59,38 @@ public final class SyncPrefs {
                 JSONObject obj = new JSONObject(new String(decoded, StandardCharsets.UTF_8));
                 String hub = obj.optString("hub", "").trim();
                 String tok = obj.optString("token", "").trim();
-                if (hub.isEmpty() || tok.isEmpty()) return false;
-                setHubUrl(ctx, hub);
-                setToken(ctx, tok);
-                setEnabled(ctx, true);
-                return true;
+                if (hub.isEmpty() || tok.isEmpty()) return null;
+                return new String[]{hub, tok};
             } catch (Exception ignored) {
-                return false;
+                return null;
             }
         }
         try {
             Uri uri = Uri.parse(s);
-            String pairTok = uri.getQueryParameter("pair");
+            String pairTok = null;
+            String frag = uri.getFragment();
+            if (frag != null && !frag.isEmpty()) {
+                pairTok = Uri.parse("http://local/?" + frag).getQueryParameter("pair");
+            }
+            if (pairTok == null || pairTok.trim().isEmpty()) {
+                pairTok = uri.getQueryParameter("pair");
+            }
             if (pairTok != null && !pairTok.trim().isEmpty() && uri.getScheme() != null && uri.getHost() != null) {
                 String portPart = uri.getPort() > 0 ? (":" + uri.getPort()) : "";
                 String path = uri.getPath() == null ? "" : uri.getPath().replaceAll("/+$", "");
                 String hub = uri.getScheme() + "://" + uri.getHost() + portPart + path;
-                setHubUrl(ctx, hub);
-                setToken(ctx, pairTok.trim());
-                setEnabled(ctx, true);
-                return true;
+                return new String[]{hub, pairTok.trim()};
             }
         } catch (Exception ignored) {}
-        return false;
+        return null;
+    }
+
+    public static boolean importPairing(Context ctx, String raw) {
+        String[] parsed = parsePairing(raw);
+        if (parsed == null) return false;
+        setHubUrl(ctx, parsed[0]);
+        setToken(ctx, parsed[1]);
+        setEnabled(ctx, true);
+        return true;
     }
 }

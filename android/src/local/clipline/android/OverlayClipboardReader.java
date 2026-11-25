@@ -1,12 +1,14 @@
 package local.clipline.android;
 
 import android.content.ClipData;
+import android.content.ClipDescription;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.graphics.PixelFormat;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PersistableBundle;
 import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
@@ -76,6 +78,22 @@ public final class OverlayClipboardReader {
             if (cm == null || !cm.hasPrimaryClip()) return false;
             ClipData clip = cm.getPrimaryClip();
             if (clip == null || clip.getItemCount() == 0) return false;
+            ClipDescription desc = clip.getDescription();
+            if (desc != null) {
+                PersistableBundle extras = desc.getExtras();
+                if (extras != null) {
+                    if (extras.getBoolean("android.content.extra.IS_SENSITIVE", false)
+                            || extras.getBoolean("android.content.extra.IS_REMOTE_DEVICE", false)) {
+                        // Never sync passwords/sensitive secrets or remote-originated clipboard items
+                        return true;
+                    }
+                }
+                if (desc.getMimeTypeCount() > 0 && desc.getMimeType(0).startsWith("image/")
+                        && clip.getItemAt(0).getText() == null) {
+                    // Do not coerce image content:// URIs into plain text
+                    return true;
+                }
+            }
             CharSequence cs = clip.getItemAt(0).coerceToText(ctx);
             if (cs == null) return false;
             String text = cs.toString();

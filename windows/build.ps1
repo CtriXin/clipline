@@ -13,7 +13,7 @@ $refs = @(
   "/r:$wpf\PresentationCore.dll", "/r:$wpf\PresentationFramework.dll", "/r:$wpf\WindowsBase.dll",
   "/r:$fw\System.Xaml.dll", "/r:System.Windows.Forms.dll", "/r:System.Drawing.dll",
   "/r:Microsoft.VisualBasic.dll", "/r:System.dll", "/r:System.Core.dll",
-  "/r:System.Web.Extensions.dll"
+  "/r:System.Security.dll", "/r:System.Web.Extensions.dll"
 )
 
 # 1. The icon, drawn by the same code the tray uses.

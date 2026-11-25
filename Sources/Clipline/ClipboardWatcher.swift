@@ -194,11 +194,13 @@ final class ClipboardWatcher {
             return
         }
 
-        if var text = pb.string(forType: .string),
-           !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            if text.count > Self.maxTextLength { text = String(text.prefix(Self.maxTextLength)) }
-            onCaptured?(text, nil)
-            onNew(Clips.storeText(text, source: source(of: pb)))
+        if let fullText = pb.string(forType: .string),
+           !fullText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            onCaptured?(fullText, nil)
+            let cardText = fullText.count > Self.maxTextLength
+                ? String(fullText.prefix(Self.maxTextLength))
+                : fullText
+            onNew(Clips.storeText(cardText, source: source(of: pb)))
         }
     }
 

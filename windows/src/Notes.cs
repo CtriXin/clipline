@@ -42,9 +42,12 @@ namespace Pegline
         {
             try
             {
+                if (!path.EndsWith(".txt", StringComparison.OrdinalIgnoreCase)) return false;
+                string full = System.IO.Path.GetFullPath(path);
                 string dir = System.IO.Path.GetFullPath(Folder).TrimEnd('\\') + "\\";
-                return System.IO.Path.GetFullPath(path).StartsWith(dir, StringComparison.OrdinalIgnoreCase)
-                    && path.EndsWith(".txt", StringComparison.OrdinalIgnoreCase);
+                string syncDir = System.IO.Path.GetFullPath(Line.SyncTempFolder).TrimEnd('\\') + "\\";
+                return full.StartsWith(dir, StringComparison.OrdinalIgnoreCase)
+                    || full.StartsWith(syncDir, StringComparison.OrdinalIgnoreCase);
             }
             catch (Exception) { return false; }
         }
@@ -56,6 +59,16 @@ namespace Pegline
             string name = Loc.L("Note", "Nota", "便签") + " " + DateTime.Now.ToString("yyyy-MM-dd HHmmss") + ".txt";
             string path = Line.UniquePath(Folder, name);
             // With a BOM, so every editor reads Chinese text right.
+            File.WriteAllText(path, text, new UTF8Encoding(true));
+            return path;
+        }
+
+        /// Writes a transient synced note into SyncTemp; deleted automatically when dropped or restarted.
+        public static string CreateTransient(string text)
+        {
+            Directory.CreateDirectory(Line.SyncTempFolder);
+            string name = "Sync " + DateTime.Now.ToString("yyyy-MM-dd HHmmss") + ".txt";
+            string path = Line.UniquePath(Line.SyncTempFolder, name);
             File.WriteAllText(path, text, new UTF8Encoding(true));
             return path;
         }

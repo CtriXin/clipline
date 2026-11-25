@@ -50,7 +50,6 @@ public final class ClipSyncService extends Service {
             try { clipboard.addPrimaryClipChangedListener(clipListener); } catch (Exception ignored) {}
         }
         SyncEngine.get().addListener(syncListener);
-        SyncEngine.get().start(this);
     }
 
     @Override

@@ -95,6 +95,7 @@ final class CrossSync: ObservableObject {
     @Published var isEnabled: Bool {
         didSet {
             UserDefaults.standard.set(isEnabled, forKey: Keys.enabled)
+            guard !suppressAutoRestart else { return }
             if isEnabled { restart() } else { stop() }
         }
     }
@@ -105,7 +106,7 @@ final class CrossSync: ObservableObject {
             if hostMode && token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 token = Self.randomToken()
             }
-            if isEnabled { restart() }
+            if isEnabled && !suppressAutoRestart { restart() }
         }
     }
 
@@ -119,7 +120,10 @@ final class CrossSync: ObservableObject {
     }
 
     @Published var token: String {
-        didSet { UserDefaults.standard.set(token, forKey: Keys.token) }
+        didSet {
+            Self.saveTokenToFile(token)
+            UserDefaults.standard.removeObject(forKey: Keys.token)
+        }
     }
 
     @Published var deviceName: String {
@@ -140,14 +144,20 @@ final class CrossSync: ObservableObject {
     private var sseTask: Task<Void, Never>?
     private var localHub: LocalSyncHub?
     private var wakeObserver: Any?
+    private var suppressAutoRestart = false
     private let maxBytes = 10 * 1024 * 1024
     private var recentHashes: [String: Date] = [:]
 
     private init() {
         let ud = UserDefaults.standard
         let defaultName = Host.current().localizedName ?? ProcessInfo.processInfo.hostName
-        var initialToken = ud.string(forKey: Keys.token) ?? ""
-        var initialHub = ud.string(forKey: Keys.hubURL) ?? ""
+        var initialToken = Self.loadTokenFromFile()
+        if initialToken.isEmpty, let legacyToken = ud.string(forKey: Keys.token), !legacyToken.isEmpty {
+            initialToken = legacyToken
+            Self.saveTokenToFile(legacyToken)
+            ud.removeObject(forKey: Keys.token)
+        }
+        let initialHub = ud.string(forKey: Keys.hubURL) ?? ""
         let savedDevice = ud.string(forKey: Keys.deviceName) ?? ""
         var initialEnabled = ud.bool(forKey: Keys.enabled)
         let savedHostMode = ud.bool(forKey: Keys.hostMode)
@@ -161,12 +171,7 @@ final class CrossSync: ObservableObject {
                     .trimmingCharacters(in: .whitespacesAndNewlines),
                !fileToken.isEmpty {
                 initialToken = fileToken
-                ud.set(fileToken, forKey: Keys.token)
-            }
-            if initialHub.isEmpty, !initialToken.isEmpty {
-                let tailIP = Self.detectTailscaleIP()
-                initialHub = tailIP.map { "http://\($0):8765" } ?? ""
-                ud.set(initialHub, forKey: Keys.hubURL)
+                Self.saveTokenToFile(fileToken)
             }
             if !initialToken.isEmpty && !initialHub.isEmpty {
                 initialEnabled = true
@@ -297,7 +302,7 @@ final class CrossSync: ObservableObject {
         let tok = token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !tok.isEmpty else { return shareableHubURL }
         let encoded = tok.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? tok
-        return "\(shareableHubURL)/?pair=\(encoded)"
+        return "\(shareableHubURL)/#pair=\(encoded)"
     }
 
     @discardableResult
@@ -310,25 +315,37 @@ final class CrossSync: ObservableObject {
                   !pair.hub.isEmpty, !pair.token.isEmpty else {
                 return false
             }
+            suppressAutoRestart = true
             hostMode = false
             hubURL = pair.hub
             token = pair.token
             isEnabled = true
+            suppressAutoRestart = false
             restart()
             return true
         }
         if let comps = URLComponents(string: s),
-           let pairToken = comps.queryItems?.first(where: { $0.name == "pair" })?.value,
-           !pairToken.isEmpty,
            let scheme = comps.scheme, let host = comps.host {
-            let portPart = comps.port.map { ":\($0)" } ?? ""
-            let pathPart = comps.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            hostMode = false
-            hubURL = pathPart.isEmpty ? "\(scheme)://\(host)\(portPart)" : "\(scheme)://\(host)\(portPart)/\(pathPart)"
-            token = pairToken
-            isEnabled = true
-            restart()
-            return true
+            var pairToken: String? = nil
+            if let frag = comps.fragment, !frag.isEmpty {
+                let fragItems = URLComponents(string: "http://local?\(frag)")?.queryItems
+                pairToken = fragItems?.first(where: { $0.name == "pair" })?.value
+            }
+            if (pairToken ?? "").isEmpty {
+                pairToken = comps.queryItems?.first(where: { $0.name == "pair" })?.value
+            }
+            if let tok = pairToken?.trimmingCharacters(in: .whitespacesAndNewlines), !tok.isEmpty {
+                let portPart = comps.port.map { ":\($0)" } ?? ""
+                let pathPart = comps.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                suppressAutoRestart = true
+                hostMode = false
+                hubURL = pathPart.isEmpty ? "\(scheme)://\(host)\(portPart)" : "\(scheme)://\(host)\(portPart)/\(pathPart)"
+                token = tok
+                isEnabled = true
+                suppressAutoRestart = false
+                restart()
+                return true
+            }
         }
         return false
     }
@@ -541,18 +558,65 @@ final class CrossSync: ObservableObject {
         return false
     }
 
-    nonisolated private static func makeSession(for hubURL: String, sse: Bool) -> URLSession {
+    private nonisolated static let directSSESession: URLSession = {
         let cfg = URLSessionConfiguration.default
-        if isDirectLANOrTailscale(hubURL) {
-            cfg.connectionProxyDictionary = [:]
-        }
-        if sse {
-            cfg.timeoutIntervalForRequest = 45
-            cfg.timeoutIntervalForResource = 0
-        } else {
-            cfg.timeoutIntervalForRequest = 15
-        }
+        cfg.connectionProxyDictionary = [:]
+        cfg.timeoutIntervalForRequest = 45
+        cfg.timeoutIntervalForResource = 0
         return URLSession(configuration: cfg)
+    }()
+
+    private nonisolated static let proxySSESession: URLSession = {
+        let cfg = URLSessionConfiguration.default
+        cfg.timeoutIntervalForRequest = 45
+        cfg.timeoutIntervalForResource = 0
+        return URLSession(configuration: cfg)
+    }()
+
+    private nonisolated static let directRestSession: URLSession = {
+        let cfg = URLSessionConfiguration.default
+        cfg.connectionProxyDictionary = [:]
+        cfg.timeoutIntervalForRequest = 15
+        return URLSession(configuration: cfg)
+    }()
+
+    private nonisolated static let proxyRestSession: URLSession = {
+        let cfg = URLSessionConfiguration.default
+        cfg.timeoutIntervalForRequest = 15
+        return URLSession(configuration: cfg)
+    }()
+
+    nonisolated private static func makeSession(for hubURL: String, sse: Bool) -> URLSession {
+        let direct = isDirectLANOrTailscale(hubURL)
+        if sse {
+            return direct ? directSSESession : proxySSESession
+        }
+        return direct ? directRestSession : proxyRestSession
+    }
+
+    private static var tokenFileURL: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
+        return base.appendingPathComponent("Clipline", isDirectory: true).appendingPathComponent("sync-token")
+    }
+
+    private static func loadTokenFromFile() -> String {
+        (try? String(contentsOf: tokenFileURL, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    private static func saveTokenToFile(_ value: String) {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let url = tokenFileURL
+        let fm = FileManager.default
+        if trimmed.isEmpty {
+            try? fm.removeItem(at: url)
+            return
+        }
+        let dir = url.deletingLastPathComponent()
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try? Data(trimmed.utf8).write(to: url, options: .atomic)
+        try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 
     static func detectTailscaleIP() -> String? {
@@ -674,15 +738,12 @@ private final class LocalSyncHub: @unchecked Sendable {
     }
 
     private func receiveRequest(conn: NWConnection, buffer: Data) {
+        let maxBodyBytes = 16 * 1024 * 1024
         conn.receive(minimumIncompleteLength: 1, maximumLength: 256 * 1024) { [weak self] data, _, isComplete, error in
             guard let self else { return }
             if let error { _ = error; conn.cancel(); return }
             var buf = buffer
             if let data { buf.append(data) }
-            if buf.count > 16 * 1024 * 1024 {
-                self.writeResponse(conn, status: "413 Payload Too Large", contentType: "text/plain", body: Data("too large".utf8))
-                return
-            }
             let sep = Data("\r\n\r\n".utf8)
             if let headerRange = buf.range(of: sep) {
                 let headerData = buf.subdata(in: 0..<headerRange.lowerBound)
@@ -704,12 +765,44 @@ private final class LocalSyncHub: @unchecked Sendable {
                         headers[k] = v
                     }
                 }
-                let contentLength = Int(headers["content-length"] ?? "0") ?? 0
+
+                // Authorize BEFORE reading/buffering any request body for protected endpoints.
+                let comps = URLComponents(string: "http://local" + target)
+                let path = comps?.path ?? target
+                var query: [String: String] = [:]
+                for item in comps?.queryItems ?? [] { query[item.name] = item.value ?? "" }
+                if path != "/api/health" && path != "/" && !self.isAuthorized(headers: headers, query: query) {
+                    self.writeResponse(conn, status: "401 Unauthorized", contentType: "text/plain", body: Data("unauthorized".utf8))
+                    return
+                }
+
+                let contentLength: Int
+                if let clRaw = headers["content-length"] {
+                    guard let parsed = Int(clRaw), parsed >= 0 else {
+                        self.writeResponse(conn, status: "400 Bad Request", contentType: "text/plain", body: Data("bad content-length".utf8))
+                        return
+                    }
+                    guard parsed <= maxBodyBytes else {
+                        self.writeResponse(conn, status: "413 Payload Too Large", contentType: "text/plain", body: Data("too large".utf8))
+                        return
+                    }
+                    contentLength = parsed
+                } else {
+                    contentLength = 0
+                }
+
+                if buf.count - bodyStart > maxBodyBytes {
+                    self.writeResponse(conn, status: "413 Payload Too Large", contentType: "text/plain", body: Data("too large".utf8))
+                    return
+                }
                 if buf.count - bodyStart >= contentLength {
-                    let body = buf.subdata(in: bodyStart..<(bodyStart + contentLength))
+                    let body = contentLength == 0 ? Data() : buf.subdata(in: bodyStart..<(bodyStart + contentLength))
                     self.handle(conn: conn, method: method, target: target, headers: headers, body: body)
                     return
                 }
+            } else if buf.count > 64 * 1024 {
+                self.writeResponse(conn, status: "431 Request Header Fields Too Large", contentType: "text/plain", body: Data("headers too large".utf8))
+                return
             }
             if isComplete { conn.cancel(); return }
             self.receiveRequest(conn: conn, buffer: buf)
@@ -917,11 +1010,12 @@ private final class LocalSyncHub: @unchecked Sendable {
     .card{background:#1c1f26;border-radius:12px;padding:12px;margin:10px 0;white-space:pre-wrap;word-break:break-word}</style></head>
     <body><h3>Clipline 跨设备剪贴板</h3><textarea id="t" rows="3" placeholder="输入或粘贴文字发送..."></textarea>
     <div><button onclick="send()">发送到电脑</button><button onclick="pull()">复制最新</button></div><div id="h"></div>
-    <script>const p=new URLSearchParams(location.search);if(p.get('pair')){localStorage.cs_tok=p.get('pair');history.replaceState(null,'','/');}
+    <script>const hp=new URLSearchParams(location.hash.replace(/^#/,'')),sp=new URLSearchParams(location.search),pt=hp.get('pair')||sp.get('pair');if(pt){localStorage.cs_tok=pt;history.replaceState(null,'',location.pathname);}
     const tok=localStorage.cs_tok||prompt('Token')||'';localStorage.cs_tok=tok;
+    const esc=s=>String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     const hdr={'Authorization':'Bearer '+tok,'X-Device':'mobile-web','X-Platform':'web'};
     async function load(){const r=await fetch('api/history',{headers:hdr});if(!r.ok)return;const a=await r.json();
-    document.getElementById('h').innerHTML=a.map(x=>'<div class="card"><small>'+x.device+'</small><br>'+(x.kind==='text'?x.text.replace(/</g,'&lt;'):'[图片]')+'</div>').join('');}
+    document.getElementById('h').innerHTML=a.map(x=>'<div class="card"><small>'+esc(x.device)+'</small><br>'+(x.kind==='text'?esc(x.text):'[图片]')+'</div>').join('');}
     async function send(){const v=document.getElementById('t').value;if(!v)return;await fetch('api/clip',{method:'POST',headers:hdr,body:v});document.getElementById('t').value='';load();}
     async function pull(){const r=await fetch('api/clip?raw=1',{headers:hdr});if(r.ok){const s=await r.text();navigator.clipboard&&navigator.clipboard.writeText(s);alert('已获取: '+s.slice(0,60));}}
     load();new EventSource('api/events?token='+encodeURIComponent(tok)+'&device=mobile-web&platform=web').addEventListener('clip',load);

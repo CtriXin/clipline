@@ -434,7 +434,7 @@ namespace Pegline
                 data.SetText(text, TextDataFormat.UnicodeText);
                 ClipboardCatcher.IgnoreNext();
                 Line.PutOnClipboard(data);
-                string path = Notes.Create(text);
+                string path = Notes.CreateTransient(text);
                 line.Hang(path, true, false, false, deviceBadge);
             }
             catch (Exception) { }
@@ -444,9 +444,9 @@ namespace Pegline
         {
             try
             {
-                Directory.CreateDirectory(Line.InboxFolder);
+                Directory.CreateDirectory(Line.SyncTempFolder);
                 string name = "Sync " + DateTime.Now.ToString("yyyy-MM-dd HHmmss") + ".png";
-                string path = Line.UniquePath(Line.InboxFolder, name);
+                string path = Line.UniquePath(Line.SyncTempFolder, name);
                 File.WriteAllBytes(path, png);
 
                 var data = new DataObject();
