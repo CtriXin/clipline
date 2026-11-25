@@ -88,14 +88,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if Inbox.isEnabled { Inbox.apply() }
         restoreSettingsOnTermination()
         startWatcher()
-        // Images on the clipboard are mostly screenshots taken with a tool
-        // that copies instead of saving: they hang like screenshots and bring
-        // the line down. Text is copied all day long, so it hangs quietly.
+        // Keep both text and images quiet so copying or receiving screenshots
+        // never drops the whole line down in front of onlookers; show only a
+        // minimal, content-free subtle capsule notice.
         clipWatcher = ClipboardWatcher { [weak self] url in
             if Clips.isText(url) {
                 self?.line.hang(url, quietly: true, peek: false)
             } else {
-                self?.hangCapture(url)
+                self?.line.hang(url, quietly: true, peek: false)
+                SubtlePill.shared.show("已收入新图片", duration: 1.2)
             }
         }
         clipWatcher?.onCaptured = { text, pngData in
@@ -105,11 +106,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if Clips.isEnabled { clipWatcher?.start() }
 
         CrossSync.shared.onRemoteClip = { [weak self] url, isImage in
-            if isImage {
-                self?.hangCapture(url)
-            } else {
-                self?.line.hang(url, quietly: true, peek: false)
-            }
+            self?.line.hang(url, quietly: true, peek: false)
+            let from = Clips.device(of: url) ?? "其他设备"
+            let label = isImage ? "\(from) · 新图片" : "\(from) · 新剪贴板"
+            SubtlePill.shared.show(label, duration: 1.6)
         }
         CrossSync.shared.startIfEnabled()
 
@@ -313,26 +313,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: The capture flying to the line
 
-    /// A new screenshot lifts off from where it was taken and flies to its
-    /// place on the line. Without a known capture area it simply drops in.
+    /// A new screenshot hangs quietly without dropping the line down in front of
+    /// onlookers, showing only a subtle, content-free capsule notice.
     @discardableResult
     private func hangCapture(_ url: URL) -> Bool {
         // A second watcher can report a capture that is already on the line.
         if line.items.contains(where: { $0.url == url && !$0.falling }) { return true }
-        let from = captureRect(of: url)
-        if let from {
-            let center = CGPoint(x: from.midX, y: from.midY)
-            pendingScreen = NSScreen.screens.first { NSMouseInRect(center, $0.frame, false) }
-        }
-        guard let id = line.hang(url, flying: from != nil) else {
+        guard line.hang(url, quietly: true, flying: false, peek: false) != nil else {
             pendingScreen = nil
             return false
         }
-        guard let from else { return true }
-        // Let the line come down and lay out before measuring the landing spot.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
-            self?.fly(id, from: from)
-        }
+        SubtlePill.shared.show("已收入新截图", duration: 1.2)
         return true
     }
 

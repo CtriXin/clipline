@@ -375,8 +375,8 @@ namespace Pegline
 
         // The capture flying to the line
 
-        /// A new screenshot lifts off from where it was taken and flies to its
-        /// place on the line. Without a known capture area it simply drops in.
+        /// A new screenshot hangs quietly without dropping the line down,
+        /// showing only a subtle, content-free capsule notice.
         void HangCapture(string path, Rect? from)
         {
             string twin;
@@ -388,16 +388,9 @@ namespace Pegline
                 FoldTwins(path, twin);
                 return;
             }
-            if (from.HasValue)
-            {
-                var r = from.Value;
-                pendingScreen = Forms.Screen.FromPoint(new System.Drawing.Point(
-                    (int)(r.X + r.Width / 2), (int)(r.Y + r.Height / 2)));
-            }
-            Guid id = line.Hang(path, false, from.HasValue);
-            if (id == Guid.Empty || !from.HasValue) return;
-            // Let the line come down and lay out before measuring the landing spot.
-            After(0.03, delegate { Fly(id, from.Value); });
+            Guid id = line.Hang(path, true, false, false);
+            if (id == Guid.Empty) return;
+            ShowSubtlePill("已收入新截图", 1.2);
         }
 
         void Fly(Guid id, Rect from)
@@ -426,6 +419,67 @@ namespace Pegline
 
         // Showing and hiding
 
+        Window subtlePill;
+        System.Windows.Controls.TextBlock subtlePillText;
+        DispatcherTimer subtlePillTimer;
+
+        void ShowSubtlePill(string text, double seconds)
+        {
+            try
+            {
+                if (subtlePill == null)
+                {
+                    subtlePillText = new System.Windows.Controls.TextBlock
+                    {
+                        Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(242, 244, 248)),
+                        FontSize = 11.5,
+                        FontWeight = FontWeights.Medium,
+                        TextTrimming = TextTrimming.CharacterEllipsis,
+                        VerticalAlignment = VerticalAlignment.Center,
+                        HorizontalAlignment = HorizontalAlignment.Center
+                    };
+                    var border = new System.Windows.Controls.Border
+                    {
+                        Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromArgb(220, 24, 26, 32)),
+                        BorderBrush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromArgb(55, 255, 255, 255)),
+                        BorderThickness = new Thickness(0.8),
+                        CornerRadius = new CornerRadius(14),
+                        Padding = new Thickness(14, 5, 14, 5),
+                        Child = subtlePillText
+                    };
+                    subtlePill = new Window
+                    {
+                        WindowStyle = WindowStyle.None,
+                        AllowsTransparency = true,
+                        Background = System.Windows.Media.Brushes.Transparent,
+                        Topmost = true,
+                        ShowInTaskbar = false,
+                        ShowActivated = false,
+                        IsHitTestVisible = false,
+                        SizeToContent = SizeToContent.WidthAndHeight,
+                        MaxWidth = 280,
+                        Content = border
+                    };
+                    subtlePillTimer = new DispatcherTimer();
+                    subtlePillTimer.Tick += delegate
+                    {
+                        subtlePillTimer.Stop();
+                        if (subtlePill != null) subtlePill.Hide();
+                    };
+                }
+                subtlePillText.Text = text;
+                subtlePill.Show();
+                subtlePill.UpdateLayout();
+                var wa = SystemParameters.WorkArea;
+                subtlePill.Left = wa.Right - subtlePill.ActualWidth - 16;
+                subtlePill.Top = wa.Top + 14;
+                subtlePillTimer.Stop();
+                subtlePillTimer.Interval = TimeSpan.FromSeconds(seconds);
+                subtlePillTimer.Start();
+            }
+            catch (Exception) { }
+        }
+
         void HandleRemoteText(string text, string deviceBadge)
         {
             try
@@ -436,6 +490,7 @@ namespace Pegline
                 Line.PutOnClipboard(data);
                 string path = Notes.CreateTransient(text);
                 line.Hang(path, true, false, false, deviceBadge);
+                ShowSubtlePill((string.IsNullOrEmpty(deviceBadge) ? "其他设备" : deviceBadge) + " · 新剪贴板", 1.6);
             }
             catch (Exception) { }
         }
@@ -458,7 +513,8 @@ namespace Pegline
                 data.SetData("PNG", new MemoryStream(png));
                 ClipboardCatcher.IgnoreNext();
                 Line.PutOnClipboard(data);
-                line.Hang(path, false, false, true, deviceBadge);
+                line.Hang(path, true, false, false, deviceBadge);
+                ShowSubtlePill((string.IsNullOrEmpty(deviceBadge) ? "其他设备" : deviceBadge) + " · 新图片", 1.6);
             }
             catch (Exception) { }
         }
