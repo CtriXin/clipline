@@ -52,6 +52,19 @@ public final class SyncEngine {
         void onStateChanged();
     }
 
+    private static final class PendingItem {
+        final String kind;
+        final String text;
+        final byte[] imgBytes;
+        final String mime;
+        PendingItem(String kind, String text, byte[] imgBytes, String mime) {
+            this.kind = kind;
+            this.text = text;
+            this.imgBytes = imgBytes;
+            this.mime = mime;
+        }
+    }
+
     private static final SyncEngine INSTANCE = new SyncEngine();
     public static SyncEngine get() { return INSTANCE; }
 
@@ -61,16 +74,51 @@ public final class SyncEngine {
     private final List<Listener> listeners = new ArrayList<>();
     private final List<DeviceInfo> onlineDevices = new ArrayList<>();
     private final List<ClipRecord> history = new ArrayList<>();
+    private final List<PendingItem> pendingOutbound = new ArrayList<>();
+    private final List<String> diagLogs = new ArrayList<>();
 
     private final AtomicLong generation = new AtomicLong(0);
     private volatile boolean running = false;
     private volatile String status = "未开启";
     private volatile boolean connected = false;
     private volatile String activeHub = "";
+    private volatile long lastClipId = 0;
     private volatile HttpURLConnection currentConn = null;
     private Context appCtx;
 
     private SyncEngine() {}
+
+    private void logDiag(String msg) {
+        String ts = new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(new java.util.Date());
+        synchronized (diagLogs) {
+            diagLogs.add("[" + ts + "] " + msg);
+            if (diagLogs.size() > 40) diagLogs.remove(0);
+        }
+    }
+
+    public String getDiagnosticReport(Context ctx) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Clipline Android\n");
+        sb.append("device=").append(SyncPrefs.getDeviceName(ctx))
+          .append(" id=").append(SyncPrefs.getDeviceId(ctx).substring(0, 8)).append("\n");
+        sb.append("enabled=").append(SyncPrefs.isEnabled(ctx))
+          .append(" connected=").append(connected)
+          .append(" status=").append(status).append("\n");
+        sb.append("activeHub=").append(activeHub.isEmpty() ? "-" : activeHub).append("\n");
+        sb.append("candidates=").append(SyncPrefs.getHubUrl(ctx)).append("\n");
+        sb.append("lastClipId=").append(lastClipId).append("\n");
+        sb.append("--- recent logs ---\n");
+        synchronized (diagLogs) {
+            for (String line : diagLogs) sb.append(line).append("\n");
+        }
+        return sb.toString();
+    }
+
+    public void reconnectNow(Context ctx) {
+        if (!SyncPrefs.isEnabled(ctx)) return;
+        logDiag("network change -> reconnect");
+        start(ctx);
+    }
 
     public void addListener(Listener l) {
         synchronized (listeners) {
@@ -110,7 +158,7 @@ public final class SyncEngine {
             notifyListeners();
             return;
         }
-        List<String> hubs = candidateHubs(SyncPrefs.getHubUrl(appCtx));
+        List<String> hubs = orderedHubs(appCtx);
         String tok = SyncPrefs.getToken(appCtx);
         if (hubs.isEmpty() || tok.isEmpty()) {
             status = "请粘贴配对码";
@@ -124,7 +172,9 @@ public final class SyncEngine {
         connected = false;
         notifyListeners();
         final String dev = SyncPrefs.getDeviceName(appCtx);
-        Thread t = new Thread(() -> sseLoop(myGen, hubs, tok, dev), "CliplineSSE-" + myGen);
+        final String devId = SyncPrefs.getDeviceId(appCtx);
+        logDiag("start gen=" + myGen + " hubs=" + hubs.size());
+        Thread t = new Thread(() -> sseLoop(myGen, hubs, tok, dev, devId), "CliplineSSE-" + myGen);
         t.setDaemon(true);
         t.start();
     }
@@ -153,7 +203,7 @@ public final class SyncEngine {
         if (seenRecently(hash)) return;
         markHash(hash);
 
-        io.execute(() -> sendPayload(c, "text", text, null, null));
+        io.execute(() -> sendPayload(c, "text", text, null, null, true));
     }
 
     public void pushImage(Context ctx, byte[] bytes, String mime) {
@@ -164,23 +214,51 @@ public final class SyncEngine {
         if (seenRecently(hash)) return;
         markHash(hash);
         String finalMime = (mime == null || mime.isEmpty()) ? "image/png" : mime;
-        io.execute(() -> sendPayload(c, "image", null, bytes, finalMime));
+        io.execute(() -> sendPayload(c, "image", null, bytes, finalMime, true));
     }
 
-    private void sendPayload(Context ctx, String kind, String text, byte[] imgBytes, String mime) {
+    private List<String> orderedHubs(Context ctx) {
+        List<String> list = candidateHubs(SyncPrefs.getHubUrl(ctx));
+        String last = SyncPrefs.getLastWorkingHub(ctx);
+        if (!last.isEmpty()) {
+            int idx = list.indexOf(last);
+            if (idx > 0) {
+                list.remove(idx);
+                list.add(0, last);
+            }
+        }
+        return list;
+    }
+
+    private void flushPendingOutbound(Context ctx) {
+        List<PendingItem> batch;
+        synchronized (pendingOutbound) {
+            if (pendingOutbound.isEmpty()) return;
+            batch = new ArrayList<>(pendingOutbound);
+            pendingOutbound.clear();
+        }
+        logDiag("flushing " + batch.size() + " queued item(s)");
+        for (PendingItem item : batch) {
+            io.execute(() -> sendPayload(ctx, item.kind, item.text, item.imgBytes, item.mime, false));
+        }
+    }
+
+    private void sendPayload(Context ctx, String kind, String text, byte[] imgBytes, String mime, boolean enqueueOnFail) {
         List<String> targets = new ArrayList<>();
         if (!activeHub.isEmpty()) targets.add(activeHub);
-        for (String h : candidateHubs(SyncPrefs.getHubUrl(ctx))) {
+        for (String h : orderedHubs(ctx)) {
             if (!targets.contains(h)) targets.add(h);
         }
         String tok = SyncPrefs.getToken(ctx);
         String dev = SyncPrefs.getDeviceName(ctx);
+        String devId = SyncPrefs.getDeviceId(ctx);
         if (targets.isEmpty() || tok.isEmpty()) return;
 
         try {
             JSONObject obj = new JSONObject();
             obj.put("kind", kind);
             obj.put("device", dev);
+            obj.put("device_id", devId);
             obj.put("platform", "android");
             if ("text".equals(kind)) {
                 obj.put("text", text);
@@ -195,12 +273,13 @@ public final class SyncEngine {
                 try {
                     conn = (HttpURLConnection) new URL(base + "/api/clip").openConnection();
                     conn.setRequestMethod("POST");
-                    conn.setConnectTimeout(8000);
+                    conn.setConnectTimeout(6000);
                     conn.setReadTimeout(10000);
                     conn.setDoOutput(true);
                     conn.setRequestProperty("Authorization", "Bearer " + tok);
                     conn.setRequestProperty("Content-Type", "application/json");
                     conn.setRequestProperty("X-Device", dev);
+                    conn.setRequestProperty("X-Device-Id", devId);
                     conn.setRequestProperty("X-Platform", "android");
                     try (OutputStream os = conn.getOutputStream()) {
                         os.write(body);
@@ -208,13 +287,23 @@ public final class SyncEngine {
                     int code = conn.getResponseCode();
                     if (code >= 200 && code < 300) {
                         activeHub = base;
+                        SyncPrefs.setLastWorkingHub(ctx, base);
                         addHistory(new ClipRecord(kind, "text".equals(kind) ? text : "[图片]", dev, "刚刚"));
                         return;
                     }
-                } catch (Exception ignored) {
+                    logDiag("push " + kind + " to " + base + " HTTP " + code);
+                } catch (Exception e) {
+                    logDiag("push " + kind + " to " + base + " err: " + e.getClass().getSimpleName());
                 } finally {
                     if (conn != null) conn.disconnect();
                 }
+            }
+            if (enqueueOnFail) {
+                synchronized (pendingOutbound) {
+                    pendingOutbound.add(new PendingItem(kind, text, imgBytes, mime));
+                    if (pendingOutbound.size() > 3) pendingOutbound.remove(0);
+                }
+                logDiag("queued outbound " + kind + " for retry");
             }
         } catch (Exception ignored) {}
     }
@@ -223,18 +312,22 @@ public final class SyncEngine {
         return running && generation.get() == gen;
     }
 
-    private void sseLoop(long gen, List<String> hubs, String tok, String dev) {
+    private void sseLoop(long gen, List<String> hubs, String tok, String dev, String devId) {
         int idx = 0;
+        long backoffMs = 1000;
         while (isCurrent(gen)) {
             String base = hubs.get(idx % hubs.size());
             idx++;
             HttpURLConnection conn = null;
             try {
-                String q = "device=" + URLEncoder.encode(dev, "UTF-8") + "&platform=android";
+                String q = "device=" + URLEncoder.encode(dev, "UTF-8")
+                        + "&device_id=" + URLEncoder.encode(devId, "UTF-8")
+                        + "&platform=android&meta=1";
+                if (lastClipId > 0) q += "&since=" + lastClipId;
                 conn = (HttpURLConnection) new URL(base + "/api/events?" + q).openConnection();
                 conn.setRequestMethod("GET");
-                conn.setConnectTimeout(10000);
-                conn.setReadTimeout(45000);
+                conn.setConnectTimeout(6000);
+                conn.setReadTimeout(35000);
                 conn.setRequestProperty("Authorization", "Bearer " + tok);
                 if (!isCurrent(gen)) break;
                 currentConn = conn;
@@ -242,6 +335,7 @@ public final class SyncEngine {
                 int code = conn.getResponseCode();
                 if (!isCurrent(gen)) break;
                 if (code != 200) {
+                    logDiag("SSE " + base + " HTTP " + code);
                     connected = false;
                     status = (code == 401) ? "Token 无效" : ("HTTP " + code);
                     notifyListeners();
@@ -249,10 +343,14 @@ public final class SyncEngine {
                     continue;
                 }
 
+                backoffMs = 1000;
                 activeHub = base;
+                if (appCtx != null) SyncPrefs.setLastWorkingHub(appCtx, base);
                 connected = true;
                 status = "已连接";
+                logDiag("SSE connected " + base);
                 notifyListeners();
+                if (appCtx != null) flushPendingOutbound(appCtx);
 
                 try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
                     String evType = "";
@@ -261,14 +359,15 @@ public final class SyncEngine {
                         if (line.startsWith("event:")) {
                             evType = line.substring(6).trim();
                         } else if (line.startsWith("data:")) {
-                            handleEvent(evType, line.substring(5).trim(), dev);
+                            handleEvent(evType, line.substring(5).trim(), dev, devId);
                         } else if (line.isEmpty()) {
                             evType = "";
                         }
                     }
                 }
-            } catch (Exception ignored) {
+            } catch (Exception e) {
                 if (isCurrent(gen)) {
+                    logDiag("SSE err (" + base + "): " + e.getClass().getSimpleName());
                     connected = false;
                     status = "重连中…";
                     notifyListeners();
@@ -277,23 +376,37 @@ public final class SyncEngine {
                 if (conn != null) try { conn.disconnect(); } catch (Exception ignored) {}
                 if (currentConn == conn) currentConn = null;
             }
-            if (isCurrent(gen)) sleepQuiet(2500);
+            if (isCurrent(gen)) {
+                long wait = (hubs.size() > 1 && idx % hubs.size() != 0) ? 400 : backoffMs;
+                sleepQuiet(wait);
+                if (idx % hubs.size() == 0) {
+                    backoffMs = Math.min(backoffMs * 2, 15000);
+                }
+            }
         }
     }
 
-    private void handleEvent(String type, String data, String localDev) {
+    private void handleEvent(String type, String data, String localDev, String localDevId) {
         try {
             if ("ready".equals(type)) {
                 JSONObject obj = new JSONObject(data);
                 updateDevices(obj.optJSONArray("devices"));
+                long lid = obj.optLong("latest_id", 0);
+                if (lid > lastClipId) lastClipId = lid;
             } else if ("devices".equals(type)) {
                 updateDevices(new JSONArray(data));
             } else if ("clip".equals(type)) {
                 JSONObject obj = new JSONObject(data);
+                long cid = obj.optLong("id", 0);
+                if (cid > lastClipId) lastClipId = cid;
                 String dev = obj.optString("device", "");
+                String devId = obj.optString("device_id", "");
                 String hash = obj.optString("hash", "");
                 String kind = obj.optString("kind", "");
-                if (dev.equalsIgnoreCase(localDev) || seenRecently(hash)) return;
+                boolean isSelf = !devId.isEmpty()
+                        ? devId.equalsIgnoreCase(localDevId)
+                        : dev.equalsIgnoreCase(localDev);
+                if (isSelf || seenRecently(hash)) return;
                 markHash(hash);
 
                 if ("text".equals(kind)) {
@@ -303,7 +416,8 @@ public final class SyncEngine {
                         addHistory(new ClipRecord("text", text, dev, "刚刚"));
                     }
                 } else if ("image".equals(kind)) {
-                    addHistory(new ClipRecord("image", "[图片，请在网页端查看]", dev, "刚刚"));
+                    long kb = Math.max(1, obj.optLong("size_bytes", 0) / 1024);
+                    addHistory(new ClipRecord("image", "[图片 " + kb + "KB，按需查看不占流量]", dev, "刚刚"));
                 }
             }
         } catch (Exception ignored) {}

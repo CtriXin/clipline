@@ -102,6 +102,39 @@ namespace Pegline
             catch (Exception) { }
         }
 
+        /// Bounded LRU cleanup of SyncTemp so files recently dragged/copied via FileDrop
+        /// remain valid for target apps while total disk usage stays strictly capped.
+        void TrimSyncTemp()
+        {
+            try
+            {
+                if (!Directory.Exists(SyncTempFolder)) return;
+                var live = new HashSet<string>(
+                    Items.Where(i => !i.Falling).Select(i => System.IO.Path.GetFullPath(i.Path)),
+                    StringComparer.OrdinalIgnoreCase);
+                var files = new DirectoryInfo(SyncTempFolder).GetFiles()
+                    .OrderByDescending(f => f.LastWriteTimeUtc)
+                    .ToList();
+                long totalBytes = 0;
+                int kept = 0;
+                foreach (var f in files)
+                {
+                    string full = System.IO.Path.GetFullPath(f.FullName);
+                    bool keep = live.Contains(full) || (kept < 20 && totalBytes + f.Length <= 32L * 1024 * 1024);
+                    if (keep)
+                    {
+                        kept++;
+                        totalBytes += f.Length;
+                    }
+                    else
+                    {
+                        try { f.Delete(); } catch (Exception) { }
+                    }
+                }
+            }
+            catch (Exception) { }
+        }
+
         public Line()
         {
             WipeSyncTemp();
@@ -183,10 +216,7 @@ namespace Pegline
             After(0.6, delegate
             {
                 Items.Remove(item);
-                if (IsTransientSyncFile(item.Path))
-                {
-                    try { File.Delete(item.Path); } catch (Exception) { }
-                }
+                if (IsTransientSyncFile(item.Path)) TrimSyncTemp();
                 Notify();
             });
         }

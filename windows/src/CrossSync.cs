@@ -59,6 +59,17 @@ namespace Pegline
         CancellationTokenSource cts;
         LocalWindowsHub localHub;
         string activeHubURL = "";
+        long lastClipId = 0;
+        readonly List<PendingClip> pendingOutbound = new List<PendingClip>();
+        readonly List<string> diagLogs = new List<string>();
+        Timer networkDebounceTimer;
+
+        sealed class PendingClip
+        {
+            public string Kind;
+            public string Text;
+            public byte[] Png;
+        }
 
         public SyncState State { get; private set; }
         public string ErrorText { get; private set; }
@@ -73,10 +84,69 @@ namespace Pegline
             ServicePointManager.SecurityProtocol =
                 (SecurityProtocolType)3072 | (SecurityProtocolType)12288 | SecurityProtocolType.Tls12;
             ServicePointManager.DefaultConnectionLimit = 16;
+            ServicePointManager.Expect100Continue = false;
             OnlineDevices = new List<RemoteDevice>();
             State = SyncState.Disabled;
             ErrorText = "";
             BootstrapDefaults();
+            MigratePlaintextTokenOnce();
+            try
+            {
+                NetworkChange.NetworkAddressChanged += delegate { ScheduleNetworkReconnect("network changed"); };
+                Microsoft.Win32.SystemEvents.PowerModeChanged += (s, e) =>
+                {
+                    if (e.Mode == Microsoft.Win32.PowerModes.Resume)
+                        ScheduleNetworkReconnect("system resume");
+                };
+            }
+            catch (Exception) { }
+        }
+
+        void ScheduleNetworkReconnect(string reason)
+        {
+            if (!Enabled) return;
+            lock (stateLock)
+            {
+                if (networkDebounceTimer != null)
+                {
+                    try { networkDebounceTimer.Dispose(); } catch (Exception) { }
+                }
+                networkDebounceTimer = new Timer(_ =>
+                {
+                    if (!Enabled) return;
+                    LogDiag(reason + " -> reconnect");
+                    Restart();
+                }, null, 900, Timeout.Infinite);
+            }
+        }
+
+        void LogDiag(string msg)
+        {
+            lock (diagLogs)
+            {
+                diagLogs.Add("[" + DateTime.Now.ToString("HH:mm:ss") + "] " + msg);
+                if (diagLogs.Count > 40) diagLogs.RemoveAt(0);
+            }
+        }
+
+        public string DeviceId
+        {
+            get
+            {
+                string id = Settings.GetString("sync.deviceId");
+                if (string.IsNullOrWhiteSpace(id))
+                {
+                    id = Guid.NewGuid().ToString("D");
+                    Settings.SetString("sync.deviceId", id);
+                }
+                return id.Trim();
+            }
+        }
+
+        string LastWorkingHub
+        {
+            get { return Settings.GetString("sync.lastWorkingHub") ?? ""; }
+            set { Settings.SetString("sync.lastWorkingHub", (value ?? "").Trim()); }
         }
 
         void BootstrapDefaults()
@@ -145,6 +215,15 @@ namespace Pegline
             set { Settings.SetString("sync.hubURL", (value ?? "").Trim()); }
         }
 
+        void MigratePlaintextTokenOnce()
+        {
+            string raw = Settings.GetString("sync.token") ?? "";
+            if (!string.IsNullOrEmpty(raw) && !raw.StartsWith("dpapi:", StringComparison.Ordinal))
+            {
+                Token = raw;
+            }
+        }
+
         public string Token
         {
             get
@@ -161,8 +240,6 @@ namespace Pegline
                     }
                     catch (Exception) { return ""; }
                 }
-                // Migrate legacy plaintext token to DPAPI automatically
-                Token = raw;
                 return raw;
             }
             set
@@ -362,7 +439,7 @@ namespace Pegline
                 }
             }
 
-            var cands = HostMode ? new List<string> { "http://127.0.0.1:" + HostPort } : CandidateURLs();
+            var cands = HostMode ? new List<string> { "http://127.0.0.1:" + HostPort } : OrderedCandidates();
             if (cands.Count == 0 || string.IsNullOrWhiteSpace(Token))
             {
                 State = SyncState.Error;
@@ -379,9 +456,10 @@ namespace Pegline
             var token = cts.Token;
             string authToken = Token;
             string dev = DeviceName;
+            string devId = DeviceId;
             bool isHost = HostMode;
 
-            var thread = new Thread(() => SSELoop(cands, authToken, dev, isHost, token))
+            var thread = new Thread(() => SSELoop(cands, authToken, dev, devId, isHost, token))
             {
                 IsBackground = true,
                 Name = "CrossSyncSSE"
@@ -424,6 +502,22 @@ namespace Pegline
                 .ToList();
         }
 
+        List<string> OrderedCandidates()
+        {
+            var list = CandidateURLs();
+            string last = LastWorkingHub;
+            if (!string.IsNullOrEmpty(last))
+            {
+                int idx = list.IndexOf(last);
+                if (idx > 0)
+                {
+                    list.RemoveAt(idx);
+                    list.Insert(0, last);
+                }
+            }
+            return list;
+        }
+
         public void PushText(string text)
         {
             if (!Enabled || string.IsNullOrEmpty(text)) return;
@@ -432,7 +526,7 @@ namespace Pegline
             string hash = ComputeHash("text", raw);
             if (SeenRecently(hash)) return;
             MarkHash(hash);
-            ThreadPool.QueueUserWorkItem(_ => SendClip("text", text, null));
+            ThreadPool.QueueUserWorkItem(_ => SendClip("text", text, null, true));
         }
 
         public void PushImage(byte[] png)
@@ -441,10 +535,23 @@ namespace Pegline
             string hash = ComputeHash("image", png);
             if (SeenRecently(hash)) return;
             MarkHash(hash);
-            ThreadPool.QueueUserWorkItem(_ => SendClip("image", null, png));
+            ThreadPool.QueueUserWorkItem(_ => SendClip("image", null, png, true));
         }
 
-        void SendClip(string kind, string text, byte[] png)
+        void FlushPendingOutbound()
+        {
+            List<PendingClip> batch;
+            lock (pendingOutbound)
+            {
+                if (pendingOutbound.Count == 0) return;
+                batch = pendingOutbound.ToList();
+                pendingOutbound.Clear();
+            }
+            foreach (var p in batch)
+                ThreadPool.QueueUserWorkItem(_ => SendClip(p.Kind, p.Text, p.Png, false));
+        }
+
+        void SendClip(string kind, string text, byte[] png, bool enqueueOnFail)
         {
             var targets = new List<string>();
             if (HostMode) targets.Add("http://127.0.0.1:" + HostPort);
@@ -454,17 +561,19 @@ namespace Pegline
                 {
                     if (!string.IsNullOrEmpty(activeHubURL)) targets.Add(activeHubURL);
                 }
-                foreach (var c in CandidateURLs())
+                foreach (var c in OrderedCandidates())
                     if (!targets.Contains(c)) targets.Add(c);
             }
             string tok = Token;
             string dev = DeviceName;
+            string devId = DeviceId;
             if (targets.Count == 0 || string.IsNullOrEmpty(tok)) return;
 
             var dict = new Dictionary<string, string>
             {
                 { "kind", kind },
                 { "device", dev },
+                { "device_id", devId },
                 { "platform", "windows" }
             };
             if (kind == "text") dict["text"] = text;
@@ -479,9 +588,10 @@ namespace Pegline
             {
                 try
                 {
-                    var req = CreateRequest(baseUrl + "/api/clip", "POST", tok, 10000);
+                    var req = CreateRequest(baseUrl + "/api/clip", "POST", tok, 8000);
                     req.ContentType = "application/json";
                     req.Headers["X-Device"] = dev;
+                    req.Headers["X-Device-Id"] = devId;
                     req.Headers["X-Platform"] = "windows";
                     req.ContentLength = body.Length;
                     using (var s = req.GetRequestStream()) s.Write(body, 0, body.Length);
@@ -490,18 +600,28 @@ namespace Pegline
                         if ((int)resp.StatusCode < 300)
                         {
                             lock (stateLock) { activeHubURL = baseUrl; }
+                            if (!HostMode) LastWorkingHub = baseUrl;
                             return;
                         }
                     }
                 }
-                catch (Exception) { }
+                catch (Exception ex) { LogDiag("push " + kind + " fail: " + ex.Message); }
+            }
+            if (enqueueOnFail)
+            {
+                lock (pendingOutbound)
+                {
+                    pendingOutbound.Add(new PendingClip { Kind = kind, Text = text, Png = png });
+                    if (pendingOutbound.Count > 3) pendingOutbound.RemoveAt(0);
+                }
             }
         }
 
-        void SSELoop(List<string> candidates, string tok, string dev, bool isHost, CancellationToken ct)
+        void SSELoop(List<string> candidates, string tok, string dev, string devId, bool isHost, CancellationToken ct)
         {
             if (isHost) Thread.Sleep(250);
             int idx = 0;
+            int backoffMs = 1000;
             while (!ct.IsCancellationRequested)
             {
                 string baseUrl = candidates[idx % candidates.Count];
@@ -509,9 +629,13 @@ namespace Pegline
                 HttpWebRequest req = null;
                 try
                 {
-                    string sseUrl = baseUrl + "/api/events?device=" + Uri.EscapeDataString(dev) + "&platform=windows";
-                    req = CreateRequest(sseUrl, "GET", tok, 45000);
-                    req.ReadWriteTimeout = 45000;
+                    string sseUrl = baseUrl + "/api/events?device=" + Uri.EscapeDataString(dev)
+                        + "&device_id=" + Uri.EscapeDataString(devId)
+                        + "&platform=windows&meta=1";
+                    long since = Interlocked.Read(ref lastClipId);
+                    if (since > 0) sseUrl += "&since=" + since;
+                    req = CreateRequest(sseUrl, "GET", tok, 8000);
+                    req.ReadWriteTimeout = 35000;
                     using (ct.Register(() => { try { req.Abort(); } catch (Exception) { } }))
                     using (var resp = (HttpWebResponse)req.GetResponse())
                     {
@@ -521,13 +645,17 @@ namespace Pegline
                             WaitCancel(ct, 4000);
                             continue;
                         }
+                        backoffMs = 1000;
                         lock (stateLock)
                         {
                             activeHubURL = baseUrl;
                             State = SyncState.Connected;
                             ErrorText = "";
                         }
+                        if (!isHost) LastWorkingHub = baseUrl;
+                        LogDiag("SSE connected " + baseUrl);
                         Notify();
+                        FlushPendingOutbound();
 
                         using (var reader = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
                         {
@@ -538,7 +666,7 @@ namespace Pegline
                                 if (line.StartsWith("event:"))
                                     eventType = line.Substring(6).Trim();
                                 else if (line.StartsWith("data:"))
-                                    HandleEvent(eventType, line.Substring(5).Trim(), dev);
+                                    HandleEvent(eventType, line.Substring(5).Trim(), dev, devId, baseUrl, tok);
                                 else if (line.Length == 0)
                                     eventType = "";
                             }
@@ -555,28 +683,37 @@ namespace Pegline
                         WaitCancel(ct, 5000);
                         continue;
                     }
+                    LogDiag("SSE err (" + baseUrl + "): " + ex.Message);
                     lock (stateLock) { if (State == SyncState.Connected) State = SyncState.Connecting; }
                     Notify();
                 }
-                catch (Exception)
+                catch (Exception ex)
                 {
                     if (ct.IsCancellationRequested) break;
+                    LogDiag("SSE err (" + baseUrl + "): " + ex.Message);
                     lock (stateLock) { if (State == SyncState.Connected) State = SyncState.Connecting; }
                     Notify();
                 }
-                WaitCancel(ct, 2500);
+                int waitMs = (candidates.Count > 1 && idx % candidates.Count != 0) ? 400 : backoffMs;
+                WaitCancel(ct, waitMs);
+                if (idx % candidates.Count == 0) backoffMs = Math.Min(backoffMs * 2, 15000);
             }
         }
 
-        void HandleEvent(string type, string data, string localDev)
+        void HandleEvent(string type, string data, string localDev, string localDevId, string baseUrl, string authToken)
         {
             try
             {
                 if (type == "ready")
                 {
                     var obj = json.Deserialize<Dictionary<string, object>>(data);
-                    if (obj != null && obj.ContainsKey("devices"))
-                        UpdateDevices(obj["devices"] as object[]);
+                    if (obj != null)
+                    {
+                        if (obj.ContainsKey("devices"))
+                            UpdateDevices(obj["devices"] as object[]);
+                        long lid = GetLong(obj, "latest_id");
+                        if (lid > Interlocked.Read(ref lastClipId)) Interlocked.Exchange(ref lastClipId, lid);
+                    }
                 }
                 else if (type == "devices")
                 {
@@ -587,11 +724,16 @@ namespace Pegline
                 {
                     var obj = json.Deserialize<Dictionary<string, object>>(data);
                     if (obj == null) return;
+                    long cid = GetLong(obj, "id");
+                    if (cid > Interlocked.Read(ref lastClipId)) Interlocked.Exchange(ref lastClipId, cid);
                     string dev = GetStr(obj, "device");
+                    string devId = GetStr(obj, "device_id");
                     string hash = GetStr(obj, "hash");
                     string kind = GetStr(obj, "kind");
-                    string plat = GetStr(obj, "platform");
-                    if (string.Equals(dev, localDev, StringComparison.OrdinalIgnoreCase) || SeenRecently(hash))
+                    bool isSelf = !string.IsNullOrEmpty(devId)
+                        ? string.Equals(devId, localDevId, StringComparison.OrdinalIgnoreCase)
+                        : string.Equals(dev, localDev, StringComparison.OrdinalIgnoreCase);
+                    if (isSelf || SeenRecently(hash))
                         return;
                     MarkHash(hash);
 
@@ -610,10 +752,41 @@ namespace Pegline
                             byte[] png = Convert.FromBase64String(b64);
                             if (png.Length > 0) OnRemoteImage(png, badge);
                         }
+                        else if (cid > 0 && OnRemoteImage != null)
+                        {
+                            ThreadPool.QueueUserWorkItem(_ => FetchRemoteImage(baseUrl, authToken, cid, badge));
+                        }
                     }
                 }
             }
             catch (Exception) { }
+        }
+
+        void FetchRemoteImage(string baseUrl, string authToken, long clipId, string badge)
+        {
+            try
+            {
+                var req = CreateRequest(baseUrl + "/api/history/" + clipId + "/raw", "GET", authToken, 15000);
+                using (var resp = (HttpWebResponse)req.GetResponse())
+                {
+                    if (resp.StatusCode != HttpStatusCode.OK) return;
+                    using (var ms = new MemoryStream())
+                    {
+                        resp.GetResponseStream().CopyTo(ms);
+                        byte[] bytes = ms.ToArray();
+                        if (bytes.Length > 0 && OnRemoteImage != null)
+                            OnRemoteImage(bytes, badge);
+                    }
+                }
+            }
+            catch (Exception ex) { LogDiag("fetch img #" + clipId + " fail: " + ex.Message); }
+        }
+
+        static long GetLong(Dictionary<string, object> d, string key)
+        {
+            object v;
+            long n;
+            return d.TryGetValue(key, out v) && v != null && long.TryParse(Convert.ToString(v), out n) ? n : 0;
         }
 
         void UpdateDevices(object[] arr)
@@ -776,16 +949,23 @@ namespace Pegline
         readonly object syncLock = new object();
         readonly List<StoredEntry> history = new List<StoredEntry>();
         readonly List<Sub> subs = new List<Sub>();
+        const long MaxHistoryBytes = 48L * 1024 * 1024;
+        long totalHistoryBytes;
         TcpListener listener;
         volatile bool running;
         long nextId;
 
         sealed class StoredEntry
         {
+            public long Id;
             public Dictionary<string, object> Item;
             public byte[] Raw;
+            public string Kind;
             public string Mime;
             public string Hash;
+            public string Device;
+            public string DeviceId;
+            public DateTime CreatedAt;
         }
 
         sealed class Sub
@@ -793,8 +973,10 @@ namespace Pegline
             public TcpClient Client;
             public Stream Stream;
             public string Device;
+            public string DeviceId;
             public string Platform;
             public string ConnectedAt;
+            public bool MetaOnly;
         }
 
         public LocalWindowsHub(int port, string token)
@@ -945,7 +1127,20 @@ namespace Pegline
                     lock (syncLock) { latest = history.FirstOrDefault(); }
                     if (latest == null) WriteResp(stream, "204 No Content", "text/plain", new byte[0]);
                     else if (query.ContainsKey("raw") && query["raw"] == "1") WriteResp(stream, "200 OK", latest.Mime, latest.Raw);
-                    else WriteResp(stream, "200 OK", "application/json", Encoding.UTF8.GetBytes(json.Serialize(latest.Item)));
+                    else WriteResp(stream, "200 OK", "application/json", Encoding.UTF8.GetBytes(SerializeEntry(latest, false)));
+                }
+                else if (method == "GET" && path.StartsWith("/api/history/") && path.EndsWith("/raw"))
+                {
+                    string idStr = path.Substring("/api/history/".Length);
+                    idStr = idStr.Substring(0, idStr.Length - "/raw".Length);
+                    long wantId;
+                    StoredEntry found = null;
+                    if (long.TryParse(idStr, out wantId))
+                    {
+                        lock (syncLock) { found = history.FirstOrDefault(h => h.Id == wantId); }
+                    }
+                    if (found == null) WriteResp(stream, "404 Not Found", "text/plain", Encoding.UTF8.GetBytes("not found"));
+                    else WriteResp(stream, "200 OK", found.Mime, found.Raw);
                 }
                 else if (method == "POST" && path == "/api/clip")
                 {
@@ -955,6 +1150,7 @@ namespace Pegline
                 {
                     keepOpen = true;
                     client.ReceiveTimeout = Timeout.Infinite;
+                    client.SendTimeout = 5000;
                     HandleSSE(client, stream, headers, query);
                 }
                 else
@@ -969,10 +1165,19 @@ namespace Pegline
             }
         }
 
+        string SerializeEntry(StoredEntry entry, bool metaOnly)
+        {
+            if (metaOnly || entry.Kind != "image") return json.Serialize(entry.Item);
+            var copy = new Dictionary<string, object>(entry.Item);
+            copy["data_base64"] = Convert.ToBase64String(entry.Raw);
+            return json.Serialize(copy);
+        }
+
         void HandlePost(Stream stream, Dictionary<string, string> headers, byte[] body)
         {
             string ct = headers.ContainsKey("Content-Type") ? headers["Content-Type"].ToLowerInvariant() : "";
             string dev = headers.ContainsKey("X-Device") ? headers["X-Device"] : "unknown";
+            string devId = headers.ContainsKey("X-Device-Id") ? headers["X-Device-Id"] : "";
             string plat = headers.ContainsKey("X-Platform") ? headers["X-Platform"] : "other";
             string kind = "text";
             string mime = "text/plain; charset=utf-8";
@@ -984,6 +1189,7 @@ namespace Pegline
                 if (obj != null)
                 {
                     if (obj.ContainsKey("device") && obj["device"] != null) dev = Convert.ToString(obj["device"]);
+                    if (obj.ContainsKey("device_id") && obj["device_id"] != null) devId = Convert.ToString(obj["device_id"]);
                     if (obj.ContainsKey("platform") && obj["platform"] != null) plat = Convert.ToString(obj["platform"]);
                     kind = obj.ContainsKey("kind") && obj["kind"] != null ? Convert.ToString(obj["kind"]) : (obj.ContainsKey("data_base64") ? "image" : "text");
                     if (kind == "image" && obj.ContainsKey("data_base64"))
@@ -1007,7 +1213,7 @@ namespace Pegline
             if (raw.Length == 0) { WriteResp(stream, "400 Bad Request", "text/plain", Encoding.UTF8.GetBytes("empty")); return; }
             string hash = CrossSync.ComputeHash(kind, raw);
 
-            Dictionary<string, object> item;
+            StoredEntry entry;
             lock (syncLock)
             {
                 if (history.Count > 0 && history[0].Hash == hash)
@@ -1016,7 +1222,8 @@ namespace Pegline
                     return;
                 }
                 nextId++;
-                item = new Dictionary<string, object>
+                var now = DateTime.UtcNow;
+                var item = new Dictionary<string, object>
                 {
                     { "id", nextId },
                     { "kind", kind },
@@ -1025,33 +1232,79 @@ namespace Pegline
                     { "hash", hash },
                     { "device", dev },
                     { "platform", plat },
-                    { "created_at", DateTime.UtcNow.ToString("o") }
+                    { "created_at", now.ToString("o") }
                 };
+                if (!string.IsNullOrEmpty(devId)) item["device_id"] = devId;
                 if (kind == "text") item["text"] = Encoding.UTF8.GetString(raw);
-                else item["data_base64"] = Convert.ToBase64String(raw);
 
-                history.Insert(0, new StoredEntry { Item = item, Raw = raw, Mime = mime, Hash = hash });
-                if (history.Count > 30) history.RemoveRange(30, history.Count - 30);
+                entry = new StoredEntry
+                {
+                    Id = nextId,
+                    Item = item,
+                    Raw = raw,
+                    Kind = kind,
+                    Mime = mime,
+                    Hash = hash,
+                    Device = dev,
+                    DeviceId = devId,
+                    CreatedAt = now
+                };
+                history.Insert(0, entry);
+                totalHistoryBytes += raw.Length;
+                while (history.Count > 30 || (history.Count > 1 && totalHistoryBytes > MaxHistoryBytes))
+                {
+                    var dropped = history[history.Count - 1];
+                    history.RemoveAt(history.Count - 1);
+                    totalHistoryBytes -= dropped.Raw.Length;
+                }
             }
-            SendAll("event: clip\ndata: " + json.Serialize(item) + "\n\n");
+            BroadcastClip(entry);
             WriteResp(stream, "200 OK", "application/json", Encoding.UTF8.GetBytes("{\"duplicate\":false}"));
         }
 
         void HandleSSE(TcpClient client, Stream stream, Dictionary<string, string> headers, Dictionary<string, string> query)
         {
             string dev = query.ContainsKey("device") ? query["device"] : (headers.ContainsKey("X-Device") ? headers["X-Device"] : "client");
+            string devId = query.ContainsKey("device_id") ? query["device_id"] : (headers.ContainsKey("X-Device-Id") ? headers["X-Device-Id"] : "");
             string plat = query.ContainsKey("platform") ? query["platform"] : (headers.ContainsKey("X-Platform") ? headers["X-Platform"] : "other");
-            var sub = new Sub { Client = client, Stream = stream, Device = dev, Platform = plat, ConnectedAt = DateTime.UtcNow.ToString("o") };
+            bool metaOnly = query.ContainsKey("meta") && query["meta"] == "1";
+            long since = 0;
+            if (query.ContainsKey("since")) long.TryParse(query["since"], out since);
+            var sub = new Sub { Client = client, Stream = stream, Device = dev, DeviceId = devId, Platform = plat, ConnectedAt = DateTime.UtcNow.ToString("o"), MetaOnly = metaOnly };
+
             List<Dictionary<string, string>> devs;
+            long latestId;
+            string catchUpJson = null;
+            lock (syncLock)
+            {
+                latestId = nextId;
+                var preview = new List<Sub>(subs) { sub };
+                devs = DevicesListFrom(preview);
+                if (since > 0 && history.Count > 0)
+                {
+                    var latest = history[0];
+                    if (latest.Id > since && (DateTime.UtcNow - latest.CreatedAt).TotalMinutes <= 10)
+                    {
+                        bool isSelf = !string.IsNullOrEmpty(devId) && !string.IsNullOrEmpty(latest.DeviceId)
+                            ? string.Equals(devId, latest.DeviceId, StringComparison.OrdinalIgnoreCase)
+                            : string.Equals(dev, latest.Device, StringComparison.OrdinalIgnoreCase);
+                        if (!isSelf) catchUpJson = SerializeEntry(latest, metaOnly);
+                    }
+                }
+            }
+            // Write HTTP headers & ready BEFORE registering subscriber so broadcasts never interleave before headers
+            string ready = json.Serialize(new Dictionary<string, object> { { "clients", devs.Count }, { "devices", devs }, { "latest_id", latestId } });
+            string headStr = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\nevent: ready\ndata: " + ready + "\n\n";
+            if (!string.IsNullOrEmpty(catchUpJson)) headStr += "event: clip\ndata: " + catchUpJson + "\n\n";
+            byte[] head = Encoding.UTF8.GetBytes(headStr);
+            try { lock (sub) { stream.Write(head, 0, head.Length); stream.Flush(); } }
+            catch (Exception) { try { client.Close(); } catch (Exception) { } return; }
+
             lock (syncLock)
             {
                 subs.Add(sub);
                 devs = DevicesListLocked();
             }
-            string ready = json.Serialize(new Dictionary<string, object> { { "clients", devs.Count }, { "devices", devs } });
-            byte[] head = Encoding.UTF8.GetBytes("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\nevent: ready\ndata: " + ready + "\n\n");
-            try { stream.Write(head, 0, head.Length); stream.Flush(); }
-            catch (Exception) { RemoveSub(sub); return; }
             SendAll("event: devices\ndata: " + json.Serialize(devs) + "\n\n");
         }
 
@@ -1062,9 +1315,19 @@ namespace Pegline
 
         List<Dictionary<string, string>> DevicesListLocked()
         {
+            return DevicesListFrom(subs);
+        }
+
+        static List<Dictionary<string, string>> DevicesListFrom(IEnumerable<Sub> source)
+        {
             var map = new Dictionary<string, Dictionary<string, string>>();
-            foreach (var s in subs)
-                map[s.Device] = new Dictionary<string, string> { { "name", s.Device }, { "platform", s.Platform }, { "connected_at", s.ConnectedAt } };
+            foreach (var s in source)
+            {
+                string key = !string.IsNullOrEmpty(s.DeviceId) ? s.DeviceId : s.Device;
+                var rec = new Dictionary<string, string> { { "name", s.Device }, { "platform", s.Platform }, { "connected_at", s.ConnectedAt } };
+                if (!string.IsNullOrEmpty(s.DeviceId)) rec["id"] = s.DeviceId;
+                map[key] = rec;
+            }
             return map.Values.OrderBy(d => d["name"]).ToList();
         }
 
@@ -1079,6 +1342,30 @@ namespace Pegline
             if (devs != null) SendAll("event: devices\ndata: " + json.Serialize(devs) + "\n\n");
         }
 
+        void BroadcastClip(StoredEntry entry)
+        {
+            List<Sub> snap;
+            lock (syncLock) { snap = subs.ToList(); }
+            byte[] metaBytes = null;
+            byte[] fullBytes = null;
+            foreach (var s in snap)
+            {
+                byte[] frame;
+                if (s.MetaOnly || entry.Kind != "image")
+                {
+                    if (metaBytes == null) metaBytes = Encoding.UTF8.GetBytes("event: clip\ndata: " + SerializeEntry(entry, true) + "\n\n");
+                    frame = metaBytes;
+                }
+                else
+                {
+                    if (fullBytes == null) fullBytes = Encoding.UTF8.GetBytes("event: clip\ndata: " + SerializeEntry(entry, false) + "\n\n");
+                    frame = fullBytes;
+                }
+                var target = s;
+                ThreadPool.QueueUserWorkItem(_ => SendToSub(target, frame));
+            }
+        }
+
         void SendAll(string text)
         {
             byte[] bytes = Encoding.UTF8.GetBytes(text);
@@ -1086,9 +1373,15 @@ namespace Pegline
             lock (syncLock) { snap = subs.ToList(); }
             foreach (var s in snap)
             {
-                try { lock (s) { s.Stream.Write(bytes, 0, bytes.Length); s.Stream.Flush(); } }
-                catch (Exception) { RemoveSub(s); }
+                var target = s;
+                ThreadPool.QueueUserWorkItem(_ => SendToSub(target, bytes));
             }
+        }
+
+        void SendToSub(Sub s, byte[] bytes)
+        {
+            try { lock (s) { s.Stream.Write(bytes, 0, bytes.Length); s.Stream.Flush(); } }
+            catch (Exception) { RemoveSub(s); }
         }
 
         bool Authorized(Dictionary<string, string> headers, Dictionary<string, string> query)

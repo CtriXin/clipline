@@ -47,9 +47,10 @@ namespace Pegline
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Pegline");
         static readonly string file = Path.Combine(Dir, "settings.ini");
         static readonly string peggedFile = Path.Combine(Dir, "pegged.txt");
+        static readonly object ioLock = new object();
         static Dictionary<string, string> values;
 
-        static Dictionary<string, string> Values
+        static Dictionary<string, string> ValuesLocked
         {
             get
             {
@@ -71,8 +72,11 @@ namespace Pegline
 
         public static bool Get(string key)
         {
-            string v;
-            return Values.TryGetValue(key, out v) && v == "1";
+            lock (ioLock)
+            {
+                string v;
+                return ValuesLocked.TryGetValue(key, out v) && v == "1";
+            }
         }
 
         public static void Set(string key, bool on)
@@ -83,21 +87,27 @@ namespace Pegline
         /// A text setting, or null when it was never set.
         public static string GetString(string key)
         {
-            string v;
-            return Values.TryGetValue(key, out v) ? v : null;
+            lock (ioLock)
+            {
+                string v;
+                return ValuesLocked.TryGetValue(key, out v) ? v : null;
+            }
         }
 
         public static void SetString(string key, string value)
         {
-            Values[key] = value;
-            try
+            lock (ioLock)
             {
-                Directory.CreateDirectory(Dir);
-                var lines = new List<string>();
-                foreach (var kv in Values) lines.Add(kv.Key + "=" + kv.Value);
-                File.WriteAllLines(file, lines);
+                ValuesLocked[key] = value;
+                try
+                {
+                    Directory.CreateDirectory(Dir);
+                    var lines = new List<string>();
+                    foreach (var kv in ValuesLocked) lines.Add(kv.Key + "=" + kv.Value);
+                    File.WriteAllLines(file, lines);
+                }
+                catch (IOException) { }
             }
-            catch (IOException) { }
         }
 
         public static string[] Pegged

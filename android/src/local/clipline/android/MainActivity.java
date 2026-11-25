@@ -353,6 +353,16 @@ public final class MainActivity extends Activity {
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         saveLp.topMargin = dp(8);
         cfgBody.addView(btnSave, saveLp);
+
+        Button btnDiag = makeButton("复制诊断日志（不含 Token）", false);
+        btnDiag.setOnClickListener(v -> {
+            SyncEngine.get().writeClipboardText(SyncEngine.get().getDiagnosticReport(this));
+            Toast.makeText(this, "已复制诊断日志", Toast.LENGTH_SHORT).show();
+        });
+        LinearLayout.LayoutParams diagLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        diagLp.topMargin = dp(8);
+        cfgBody.addView(btnDiag, diagLp);
         cfgCard.addView(cfgBody);
         root.addView(cfgCard);
 

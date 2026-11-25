@@ -197,10 +197,11 @@ final class ClipboardWatcher {
         if let fullText = pb.string(forType: .string),
            !fullText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             onCaptured?(fullText, nil)
-            let cardText = fullText.count > Self.maxTextLength
-                ? String(fullText.prefix(Self.maxTextLength))
-                : fullText
-            onNew(Clips.storeText(cardText, source: source(of: pb)))
+            // Keep full text in the card store (up to 10MB) so copying the card back never truncates;
+            // makeTextCard only inspects/renders a bounded prefix for display.
+            if fullText.utf8.count <= 10 * 1024 * 1024 {
+                onNew(Clips.storeText(fullText, source: source(of: pb)))
+            }
         }
     }
 
@@ -364,7 +365,9 @@ func makeTextCard(_ text: String, link: URL?, maxPixels: Int = 480) -> NSImage {
                 .font: NSFont.systemFont(ofSize: 9), .foregroundColor: ink.withAlphaComponent(0.6), .paragraphStyle: para]))
         }
     } else {
-        let (masked, hidden) = Secrets.mask(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sample = trimmed.count > 4096 ? String(trimmed.prefix(4096)) : trimmed
+        let (masked, hidden) = Secrets.mask(sample)
         let shown = masked.count > 400 ? String(masked.prefix(400)) + "…" : masked
         body.append(NSAttributedString(string: (hidden ? "🔒 " : "") + shown, attributes: [
             .font: NSFont.systemFont(ofSize: 12.5, weight: .semibold), .foregroundColor: ink, .paragraphStyle: para]))

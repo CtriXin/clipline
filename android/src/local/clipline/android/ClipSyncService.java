@@ -9,8 +9,12 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
+import android.net.ConnectivityManager;
+import android.net.Network;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 
 public final class ClipSyncService extends Service {
     public static final String ACTION_PUSH_NOW = "local.clipline.android.PUSH_NOW";
@@ -18,6 +22,11 @@ public final class ClipSyncService extends Service {
     private static final int NOTIF_ID = 1001;
 
     private ClipboardManager clipboard;
+    private ConnectivityManager connectivityManager;
+    private ConnectivityManager.NetworkCallback networkCallback;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private boolean sawInitialNetwork = false;
+    private final Runnable reconnectTask = () -> SyncEngine.get().reconnectNow(this);
     private final ClipboardManager.OnPrimaryClipChangedListener clipListener =
             () -> OverlayClipboardReader.triggerReadAndPush(this);
     private final SyncEngine.Listener syncListener = this::updateNotification;
@@ -50,6 +59,33 @@ public final class ClipSyncService extends Service {
             try { clipboard.addPrimaryClipChangedListener(clipListener); } catch (Exception ignored) {}
         }
         SyncEngine.get().addListener(syncListener);
+        registerNetworkWatcher();
+    }
+
+    private void registerNetworkWatcher() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return;
+        try {
+            connectivityManager = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            if (connectivityManager == null) return;
+            networkCallback = new ConnectivityManager.NetworkCallback() {
+                @Override
+                public void onAvailable(Network network) {
+                    if (!sawInitialNetwork) {
+                        sawInitialNetwork = true;
+                        return;
+                    }
+                    mainHandler.removeCallbacks(reconnectTask);
+                    mainHandler.postDelayed(reconnectTask, 800);
+                }
+
+                @Override
+                public void onLost(Network network) {
+                    mainHandler.removeCallbacks(reconnectTask);
+                    mainHandler.postDelayed(reconnectTask, 1200);
+                }
+            };
+            connectivityManager.registerDefaultNetworkCallback(networkCallback);
+        } catch (Exception ignored) {}
     }
 
     @Override
@@ -69,6 +105,10 @@ public final class ClipSyncService extends Service {
 
     @Override
     public void onDestroy() {
+        mainHandler.removeCallbacks(reconnectTask);
+        if (connectivityManager != null && networkCallback != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            try { connectivityManager.unregisterNetworkCallback(networkCallback); } catch (Exception ignored) {}
+        }
         SyncEngine.get().removeListener(syncListener);
         SyncEngine.get().stop();
         if (clipboard != null) {

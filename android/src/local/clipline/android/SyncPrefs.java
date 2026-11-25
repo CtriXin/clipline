@@ -7,6 +7,7 @@ import android.os.Build;
 import android.util.Base64;
 import org.json.JSONObject;
 import java.nio.charset.StandardCharsets;
+import java.util.UUID;
 
 public final class SyncPrefs {
     private static final String NAME = "clipline_sync";
@@ -47,6 +48,23 @@ public final class SyncPrefs {
 
     public static void setDeviceName(Context ctx, String v) {
         prefs(ctx).edit().putString("device_name", v == null ? "" : v.trim()).apply();
+    }
+
+    public static String getDeviceId(Context ctx) {
+        String v = prefs(ctx).getString("device_id", "");
+        if (v == null || v.trim().isEmpty()) {
+            v = UUID.randomUUID().toString();
+            prefs(ctx).edit().putString("device_id", v).apply();
+        }
+        return v;
+    }
+
+    public static String getLastWorkingHub(Context ctx) {
+        return prefs(ctx).getString("last_working_hub", "").trim();
+    }
+
+    public static void setLastWorkingHub(Context ctx, String v) {
+        prefs(ctx).edit().putString("last_working_hub", v == null ? "" : v.trim()).apply();
     }
 
     public static String[] parsePairing(String raw) {

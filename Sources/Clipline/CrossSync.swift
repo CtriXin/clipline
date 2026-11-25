@@ -30,10 +30,16 @@ final class CrossSync: ObservableObject {
     }
 
     struct RemoteDevice: Codable, Equatable, Identifiable {
+        let deviceID: String?
         let name: String
         let platform: String
         let connected_at: String?
-        var id: String { name }
+        var id: String { (deviceID?.isEmpty == false ? deviceID! : name) }
+
+        enum CodingKeys: String, CodingKey {
+            case deviceID = "id"
+            case name, platform, connected_at
+        }
 
         var icon: String { Self.icon(for: platform) }
 
@@ -57,12 +63,14 @@ final class CrossSync: ObservableObject {
         let data_base64: String?
         let hash: String
         let device: String
+        let device_id: String?
         let platform: String?
     }
 
     private struct ReadyPayload: Codable {
         let clients: Int?
         let devices: [RemoteDevice]?
+        let latest_id: Int64?
     }
 
     private struct PushPayload: Codable {
@@ -71,6 +79,7 @@ final class CrossSync: ObservableObject {
         let mime: String?
         let data_base64: String?
         let device: String
+        let device_id: String
         let platform: String
     }
 
@@ -88,6 +97,8 @@ final class CrossSync: ObservableObject {
         static let hubURL = "crossSync.hubURL"
         static let token = "crossSync.token"
         static let deviceName = "crossSync.deviceName"
+        static let deviceId = "crossSync.deviceId"
+        static let lastWorkingHub = "crossSync.lastWorkingHub"
         static let syncImages = "crossSync.syncImages"
         static let initialized = "crossSync.initialized"
     }
@@ -144,13 +155,30 @@ final class CrossSync: ObservableObject {
     private var sseTask: Task<Void, Never>?
     private var localHub: LocalSyncHub?
     private var wakeObserver: Any?
+    private var pathMonitor: NWPathMonitor?
+    private var lastPathSignature: String?
+    private var networkDebounceWork: DispatchWorkItem?
     private var suppressAutoRestart = false
     private let maxBytes = 10 * 1024 * 1024
     private var recentHashes: [String: Date] = [:]
+    let deviceID: String
+    private var lastWorkingHub: String = ""
+    private var lastClipID: Int64 = 0
+    private var pendingOutbound: [(kind: String, raw: Data)] = []
+    private var diagLogs: [String] = []
 
     private init() {
         let ud = UserDefaults.standard
         let defaultName = Host.current().localizedName ?? ProcessInfo.processInfo.hostName
+        let savedID = ud.string(forKey: Keys.deviceId) ?? ""
+        if savedID.isEmpty {
+            let newID = UUID().uuidString.lowercased()
+            ud.set(newID, forKey: Keys.deviceId)
+            self.deviceID = newID
+        } else {
+            self.deviceID = savedID
+        }
+        self.lastWorkingHub = ud.string(forKey: Keys.lastWorkingHub) ?? ""
         var initialToken = Self.loadTokenFromFile()
         if initialToken.isEmpty, let legacyToken = ud.string(forKey: Keys.token), !legacyToken.isEmpty {
             initialToken = legacyToken
@@ -193,9 +221,52 @@ final class CrossSync: ObservableObject {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, self.isEnabled else { return }
+                self.logDiag("system wake -> reconnect")
                 self.restart()
             }
         }
+
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            let sig = "\(path.status)-\(path.availableInterfaces.map { $0.name }.joined(separator: ","))"
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let prev = self.lastPathSignature
+                self.lastPathSignature = sig
+                guard prev != nil, prev != sig, self.isEnabled, path.status == .satisfied else { return }
+                self.networkDebounceWork?.cancel()
+                let work = DispatchWorkItem { [weak self] in
+                    guard let self, self.isEnabled else { return }
+                    self.logDiag("network path changed (\(sig)) -> reconnect")
+                    self.restart()
+                }
+                self.networkDebounceWork = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
+            }
+        }
+        monitor.start(queue: DispatchQueue(label: "local.clipline.netmon"))
+        self.pathMonitor = monitor
+    }
+
+    func logDiag(_ message: String) {
+        let ts = ISO8601DateFormatter().string(from: Date())
+        diagLogs.append("[\(ts)] \(message)")
+        if diagLogs.count > 40 { diagLogs.removeFirst(diagLogs.count - 40) }
+    }
+
+    func diagnosticReport() -> String {
+        let ver = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
+        let header = [
+            "Clipline macOS \(ver)",
+            "device=\(deviceName) id=\(deviceID.prefix(8))",
+            "enabled=\(isEnabled) hostMode=\(hostMode) state=\(state.label)",
+            "activeHub=\(activeHubURL.isEmpty ? "-" : activeHubURL)",
+            "candidates=\(candidateURLs().joined(separator: ","))",
+            "online=\(onlineDevices.map { "\($0.name)(\($0.platform))" }.joined(separator: ", "))",
+            "lastClipID=\(lastClipID) pendingOutbound=\(pendingOutbound.count)",
+            "--- recent logs ---"
+        ]
+        return (header + diagLogs).joined(separator: "\n")
     }
 
     // MARK: - Lifecycle
@@ -222,15 +293,23 @@ final class CrossSync: ObservableObject {
                 token = tok
             }
             let hub = LocalSyncHub(port: UInt16(clamping: hostPort), token: tok)
+            hub.onListenerFailed = { [weak self] msg in
+                DispatchQueue.main.async {
+                    guard let self, self.localHub === hub else { return }
+                    self.logDiag("local hub listener failed: \(msg)")
+                    self.state = .error("端口 \(self.hostPort) 启动失败")
+                }
+            }
             if hub.start() {
                 localHub = hub
             } else {
+                logDiag("local hub start() returned false on port \(hostPort)")
                 state = .error("端口 \(hostPort) 启动失败")
                 return
             }
         }
 
-        let candidates = hostMode ? ["http://127.0.0.1:\(hostPort)"] : candidateURLs()
+        let candidates = hostMode ? ["http://127.0.0.1:\(hostPort)"] : orderedCandidates()
         guard !candidates.isEmpty, !tok.isEmpty else {
             state = .error("请粘贴配对码或开启主机")
             return
@@ -238,12 +317,14 @@ final class CrossSync: ObservableObject {
         state = .connecting
         let dev = deviceName.trimmingCharacters(in: .whitespacesAndNewlines)
         let finalDev = dev.isEmpty ? "mac" : dev
+        let devID = deviceID
+        logDiag("restart candidates=\(candidates.joined(separator: ","))")
 
         sseTask = Task { [weak self] in
             if self?.hostMode == true {
                 try? await Task.sleep(nanoseconds: 250_000_000)
             }
-            await self?.runSSELoop(candidates: candidates, token: tok, device: finalDev)
+            await self?.runSSELoop(candidates: candidates, token: tok, device: finalDev, deviceID: devID)
         }
     }
 
@@ -262,6 +343,15 @@ final class CrossSync: ObservableObject {
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/")) }
             .filter { !$0.isEmpty }
+    }
+
+    private func orderedCandidates() -> [String] {
+        var list = candidateURLs()
+        if !lastWorkingHub.isEmpty, let idx = list.firstIndex(of: lastWorkingHub), idx > 0 {
+            list.remove(at: idx)
+            list.insert(lastWorkingHub, at: 0)
+        }
+        return list
     }
 
     // MARK: - Pairing
@@ -305,24 +395,16 @@ final class CrossSync: ObservableObject {
         return "\(shareableHubURL)/#pair=\(encoded)"
     }
 
-    @discardableResult
-    func importPairing(_ raw: String) -> Bool {
+    static func parsePairing(_ raw: String) -> (hub: String, token: String)? {
         let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if s.hasPrefix("clipsync://") {
             let b64 = String(s.dropFirst("clipsync://".count))
             guard let data = Data(base64Encoded: b64),
                   let pair = try? JSONDecoder().decode(PairPayload.self, from: data),
                   !pair.hub.isEmpty, !pair.token.isEmpty else {
-                return false
+                return nil
             }
-            suppressAutoRestart = true
-            hostMode = false
-            hubURL = pair.hub
-            token = pair.token
-            isEnabled = true
-            suppressAutoRestart = false
-            restart()
-            return true
+            return (pair.hub, pair.token)
         }
         if let comps = URLComponents(string: s),
            let scheme = comps.scheme, let host = comps.host {
@@ -337,17 +419,24 @@ final class CrossSync: ObservableObject {
             if let tok = pairToken?.trimmingCharacters(in: .whitespacesAndNewlines), !tok.isEmpty {
                 let portPart = comps.port.map { ":\($0)" } ?? ""
                 let pathPart = comps.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-                suppressAutoRestart = true
-                hostMode = false
-                hubURL = pathPart.isEmpty ? "\(scheme)://\(host)\(portPart)" : "\(scheme)://\(host)\(portPart)/\(pathPart)"
-                token = tok
-                isEnabled = true
-                suppressAutoRestart = false
-                restart()
-                return true
+                let hub = pathPart.isEmpty ? "\(scheme)://\(host)\(portPart)" : "\(scheme)://\(host)\(portPart)/\(pathPart)"
+                return (hub, tok)
             }
         }
-        return false
+        return nil
+    }
+
+    @discardableResult
+    func importPairing(_ raw: String) -> Bool {
+        guard let parsed = Self.parsePairing(raw) else { return false }
+        suppressAutoRestart = true
+        hostMode = false
+        hubURL = parsed.hub
+        token = parsed.token
+        isEnabled = true
+        suppressAutoRestart = false
+        restart()
+        return true
     }
 
     static func makeQRCode(for string: String, size: CGFloat = 180) -> NSImage? {
@@ -390,13 +479,20 @@ final class CrossSync: ObservableObject {
         sendAsync(kind: "image", raw: pngData)
     }
 
-    private func sendAsync(kind: String, raw: Data) {
-        let base = hostMode
-            ? "http://127.0.0.1:\(hostPort)"
-            : (activeHubURL.isEmpty ? (candidateURLs().first ?? "") : activeHubURL)
+    private func sendAsync(kind: String, raw: Data, enqueueOnFail: Bool = true) {
+        let targets: [String]
+        if hostMode {
+            targets = ["http://127.0.0.1:\(hostPort)"]
+        } else {
+            var list: [String] = []
+            if !activeHubURL.isEmpty { list.append(activeHubURL) }
+            for c in orderedCandidates() where !list.contains(c) { list.append(c) }
+            targets = list
+        }
         let tok = token.trimmingCharacters(in: .whitespacesAndNewlines)
         let dev = deviceName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !base.isEmpty, !tok.isEmpty, let url = URL(string: "\(base)/api/clip") else { return }
+        let devID = deviceID
+        guard !targets.isEmpty, !tok.isEmpty else { return }
 
         let payload = PushPayload(
             kind: kind,
@@ -404,37 +500,81 @@ final class CrossSync: ObservableObject {
             mime: kind == "image" ? "image/png" : nil,
             data_base64: kind == "image" ? raw.base64EncodedString() : nil,
             device: dev.isEmpty ? "mac" : dev,
+            device_id: devID,
             platform: "macos"
         )
         guard let body = try? JSONEncoder().encode(payload) else { return }
 
-        Task.detached {
-            var req = URLRequest(url: url)
-            req.httpMethod = "POST"
-            req.assumesHTTP3Capable = false
-            req.setValue("Bearer \(tok)", forHTTPHeaderField: "Authorization")
-            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            req.setValue(payload.device, forHTTPHeaderField: "X-Device")
-            req.setValue("macos", forHTTPHeaderField: "X-Platform")
-            req.httpBody = body
-            let session = Self.makeSession(for: base, sse: false)
-            _ = try? await session.data(for: req)
+        Task { [weak self] in
+            var ok = false
+            for base in targets {
+                guard let url = URL(string: "\(base)/api/clip") else { continue }
+                var req = URLRequest(url: url)
+                req.httpMethod = "POST"
+                req.assumesHTTP3Capable = false
+                req.setValue("Bearer \(tok)", forHTTPHeaderField: "Authorization")
+                req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                req.setValue(payload.device, forHTTPHeaderField: "X-Device")
+                req.setValue(devID, forHTTPHeaderField: "X-Device-Id")
+                req.setValue("macos", forHTTPHeaderField: "X-Platform")
+                req.httpBody = body
+                let session = Self.makeSession(for: base, sse: false)
+                do {
+                    let (_, resp) = try await session.data(for: req)
+                    if let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) {
+                        ok = true
+                        self?.rememberWorkingHub(base)
+                        break
+                    }
+                } catch {
+                    self?.logDiag("push \(kind) to \(base) failed: \(error.localizedDescription)")
+                }
+            }
+            if !ok && enqueueOnFail {
+                guard let self else { return }
+                self.pendingOutbound.append((kind, raw))
+                if self.pendingOutbound.count > 3 { self.pendingOutbound.removeFirst(self.pendingOutbound.count - 3) }
+                self.logDiag("queued outbound \(kind) (\(raw.count)B) for retry")
+            }
         }
+    }
+
+    private func flushPendingOutbound() {
+        guard !pendingOutbound.isEmpty else { return }
+        let items = pendingOutbound
+        pendingOutbound.removeAll()
+        logDiag("flushing \(items.count) queued outbound item(s)")
+        for item in items {
+            sendAsync(kind: item.kind, raw: item.raw, enqueueOnFail: false)
+        }
+    }
+
+    private func rememberWorkingHub(_ base: String) {
+        guard !hostMode, !base.isEmpty, lastWorkingHub != base else { return }
+        lastWorkingHub = base
+        UserDefaults.standard.set(base, forKey: Keys.lastWorkingHub)
     }
 
     // MARK: - Inbound SSE loop
 
-    private func runSSELoop(candidates: [String], token: String, device: String) async {
+    private func runSSELoop(candidates: [String], token: String, device: String, deviceID: String) async {
         var idx = 0
+        var backoffSec: Double = 1.0
         while !Task.isCancelled {
             let base = candidates[idx % candidates.count]
             idx += 1
 
             var comps = URLComponents(string: "\(base)/api/events")
-            comps?.queryItems = [
+            var items = [
                 URLQueryItem(name: "device", value: device),
+                URLQueryItem(name: "device_id", value: deviceID),
                 URLQueryItem(name: "platform", value: "macos"),
+                URLQueryItem(name: "meta", value: "1"),
             ]
+            if lastClipID > 0 {
+                items.append(URLQueryItem(name: "since", value: String(lastClipID)))
+            }
+            comps?.queryItems = items
             guard let url = comps?.url else {
                 state = .error("地址格式有误")
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
@@ -448,13 +588,18 @@ final class CrossSync: ObservableObject {
                 req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
                 let (bytes, resp) = try await session.bytes(for: req)
                 if let http = resp as? HTTPURLResponse, http.statusCode != 200 {
+                    logDiag("SSE \(base) HTTP \(http.statusCode)")
                     state = .error(http.statusCode == 401 ? "Token 无效" : "HTTP \(http.statusCode)")
                     try? await Task.sleep(nanoseconds: 4_000_000_000)
                     continue
                 }
 
+                backoffSec = 1.0
                 activeHubURL = base
+                rememberWorkingHub(base)
                 state = .connected
+                logDiag("SSE connected to \(base)")
+                flushPendingOutbound()
                 var eventType = ""
                 for try await line in bytes.lines {
                     if Task.isCancelled { break }
@@ -462,29 +607,35 @@ final class CrossSync: ObservableObject {
                         eventType = line.dropFirst(6).trimmingCharacters(in: .whitespaces)
                     } else if line.hasPrefix("data:") {
                         let jsonStr = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
-                        handleSSEEvent(type: eventType, jsonString: jsonStr, localDevice: device)
+                        handleSSEEvent(type: eventType, jsonString: jsonStr, localDevice: device, localDeviceID: deviceID, activeBase: base, authToken: token)
                     } else if line.isEmpty {
                         eventType = ""
                     }
                 }
+                logDiag("SSE stream ended from \(base)")
             } catch {
                 if !Task.isCancelled {
+                    logDiag("SSE error (\(base)): \(error.localizedDescription)")
                     state = .connecting
                 }
             }
             if !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 2_500_000_000)
+                let wait = candidates.count > 1 && idx % candidates.count != 0 ? 0.5 : backoffSec
+                try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+                if idx % candidates.count == 0 {
+                    backoffSec = min(backoffSec * 2.0, 15.0)
+                }
             }
         }
     }
 
-    private func handleSSEEvent(type: String, jsonString: String, localDevice: String) {
+    private func handleSSEEvent(type: String, jsonString: String, localDevice: String, localDeviceID: String, activeBase: String, authToken: String) {
         guard let data = jsonString.data(using: .utf8) else { return }
         switch type {
         case "ready":
-            if let ready = try? JSONDecoder().decode(ReadyPayload.self, from: data),
-               let devs = ready.devices {
-                onlineDevices = devs
+            if let ready = try? JSONDecoder().decode(ReadyPayload.self, from: data) {
+                if let devs = ready.devices { onlineDevices = devs }
+                if let lid = ready.latest_id, lid > lastClipID { lastClipID = lid }
             }
         case "devices":
             if let devs = try? JSONDecoder().decode([RemoteDevice].self, from: data) {
@@ -492,7 +643,14 @@ final class CrossSync: ObservableObject {
             }
         case "clip":
             guard let ev = try? JSONDecoder().decode(ClipEvent.self, from: data) else { return }
-            guard ev.device != localDevice, !seenRecently(ev.hash) else { return }
+            if ev.id > lastClipID { lastClipID = ev.id }
+            let isSelf: Bool
+            if let evID = ev.device_id, !evID.isEmpty {
+                isSelf = (evID == localDeviceID)
+            } else {
+                isSelf = (ev.device == localDevice)
+            }
+            guard !isSelf, !seenRecently(ev.hash) else { return }
             markHash(ev.hash)
 
             let badge = "\(RemoteDevice.icon(for: ev.platform)) \(ev.device)"
@@ -504,20 +662,44 @@ final class CrossSync: ObservableObject {
                 let url = Clips.storeText(text, source: badge)
                 Clips.setDevice(badge, for: url)
                 onRemoteClip?(url, false)
-            } else if ev.kind == "image", syncImages,
-                      let b64 = ev.data_base64,
-                      let imgData = Data(base64Encoded: b64), !imgData.isEmpty {
-                let pb = NSPasteboard.general
-                pb.clearContents()
-                pb.setData(imgData, forType: .png)
-                Clips.ownChangeCount = pb.changeCount
-                if let url = Clips.save(imgData, ext: "png") {
-                    Clips.setDevice(badge, for: url)
-                    onRemoteClip?(url, true)
+            } else if ev.kind == "image", syncImages {
+                if let b64 = ev.data_base64, let imgData = Data(base64Encoded: b64), !imgData.isEmpty {
+                    applyRemoteImage(imgData, badge: badge)
+                } else {
+                    fetchRemoteImage(clipID: ev.id, base: activeBase, token: authToken, badge: badge)
                 }
             }
         default:
             break
+        }
+    }
+
+    private func applyRemoteImage(_ imgData: Data, badge: String) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setData(imgData, forType: .png)
+        Clips.ownChangeCount = pb.changeCount
+        if let url = Clips.save(imgData, ext: "png") {
+            Clips.setDevice(badge, for: url)
+            onRemoteClip?(url, true)
+        }
+    }
+
+    private func fetchRemoteImage(clipID: Int64, base: String, token: String, badge: String) {
+        guard let url = URL(string: "\(base)/api/history/\(clipID)/raw") else { return }
+        Task { [weak self] in
+            var req = URLRequest(url: url)
+            req.assumesHTTP3Capable = false
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            let session = Self.makeSession(for: base, sse: false)
+            do {
+                let (data, resp) = try await session.data(for: req)
+                if let http = resp as? HTTPURLResponse, http.statusCode == 200, !data.isEmpty {
+                    self?.applyRemoteImage(data, badge: badge)
+                }
+            } catch {
+                self?.logDiag("fetch image #\(clipID) failed: \(error.localizedDescription)")
+            }
         }
     }
 
@@ -594,6 +776,10 @@ final class CrossSync: ObservableObject {
         return direct ? directRestSession : proxyRestSession
     }
 
+    /// Stored as a 0600 file under Application Support rather than legacy File Keychain:
+    /// legacy SecItemAdd entries break whenever an open-source user rebuilds ad-hoc or
+    /// changes signing identity, triggering blocking SecurityAgent dialogs (fatal on headless Macs).
+    /// Moving out of UserDefaults ensures `defaults read` and plist exports never leak the token.
     private static var tokenFileURL: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
@@ -654,7 +840,7 @@ final class CrossSync: ObservableObject {
 
 // MARK: - Embedded Zero-Server HTTP+SSE Sync Hub (for LAN / Tailscale Host Mode)
 
-private final class LocalSyncHub: @unchecked Sendable {
+final class LocalSyncHub: @unchecked Sendable {
     private let port: UInt16
     private let token: String
     private let queue = DispatchQueue(label: "local.clipline.sync-hub")
@@ -670,11 +856,13 @@ private final class LocalSyncHub: @unchecked Sendable {
         let size_bytes: Int
         let hash: String
         let device: String
+        let device_id: String?
         let platform: String?
         let created_at: String
     }
 
     private struct DeviceRecord: Codable {
+        let id: String?
         let name: String
         let platform: String
         let connected_at: String
@@ -683,14 +871,19 @@ private final class LocalSyncHub: @unchecked Sendable {
     private final class Subscriber {
         let conn: NWConnection
         let device: DeviceRecord
-        init(conn: NWConnection, device: DeviceRecord) {
+        let metaOnly: Bool
+        init(conn: NWConnection, device: DeviceRecord, metaOnly: Bool) {
             self.conn = conn
             self.device = device
+            self.metaOnly = metaOnly
         }
     }
 
+    var onListenerFailed: ((String) -> Void)?
     private var nextID: Int64 = 0
-    private var history: [(clip: StoredClip, raw: Data)] = []
+    private let maxHistoryBytes = 48 * 1024 * 1024
+    private var totalHistoryBytes = 0
+    private var history: [(clip: StoredClip, raw: Data, createdAt: Date)] = []
     private var subscribers: [ObjectIdentifier: Subscriber] = [:]
 
     init(port: UInt16, token: String) {
@@ -702,6 +895,11 @@ private final class LocalSyncHub: @unchecked Sendable {
         guard let nwPort = NWEndpoint.Port(rawValue: port) else { return false }
         do {
             let l = try NWListener(using: .tcp, on: nwPort)
+            l.stateUpdateHandler = { [weak self] state in
+                if case .failed(let err) = state {
+                    self?.onListenerFailed?(err.localizedDescription)
+                }
+            }
             l.newConnectionHandler = { [weak self] conn in
                 self?.accept(conn)
             }
@@ -859,7 +1057,8 @@ private final class LocalSyncHub: @unchecked Sendable {
             if query["raw"] == "1" {
                 writeResponse(conn, status: "200 OK", contentType: first.clip.mime ?? "text/plain; charset=utf-8", body: first.raw)
             } else {
-                let data = (try? JSONEncoder().encode(first.clip)) ?? Data("{}".utf8)
+                let full = clipWithInlineBase64IfNeeded(first.clip, raw: first.raw, metaOnly: false)
+                let data = (try? JSONEncoder().encode(full)) ?? Data("{}".utf8)
                 writeResponse(conn, status: "200 OK", contentType: "application/json", body: data)
             }
 
@@ -881,9 +1080,27 @@ private final class LocalSyncHub: @unchecked Sendable {
         }
     }
 
+    private func clipWithInlineBase64IfNeeded(_ clip: StoredClip, raw: Data, metaOnly: Bool) -> StoredClip {
+        if metaOnly || clip.kind != "image" { return clip }
+        return StoredClip(
+            id: clip.id,
+            kind: clip.kind,
+            text: clip.text,
+            mime: clip.mime,
+            data_base64: raw.base64EncodedString(),
+            size_bytes: clip.size_bytes,
+            hash: clip.hash,
+            device: clip.device,
+            device_id: clip.device_id,
+            platform: clip.platform,
+            created_at: clip.created_at
+        )
+    }
+
     private func handlePostClip(conn: NWConnection, headers: [String: String], body: Data) {
         let ct = (headers["content-type"] ?? "").lowercased()
         var device = headers["x-device"] ?? "unknown"
+        var deviceID = headers["x-device-id"]
         var platform = headers["x-platform"] ?? "other"
         var kind = "text"
         var mime = "text/plain; charset=utf-8"
@@ -892,6 +1109,7 @@ private final class LocalSyncHub: @unchecked Sendable {
         if ct.hasPrefix("application/json"),
            let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
             if let d = obj["device"] as? String, !d.isEmpty { device = d }
+            if let did = obj["device_id"] as? String, !did.isEmpty { deviceID = did }
             if let p = obj["platform"] as? String, !p.isEmpty { platform = p }
             kind = (obj["kind"] as? String) ?? ((obj["data_base64"] as? String) != nil ? "image" : "text")
             if kind == "image", let b64 = obj["data_base64"] as? String, let d = Data(base64Encoded: b64) {
@@ -918,31 +1136,42 @@ private final class LocalSyncHub: @unchecked Sendable {
         }
 
         nextID += 1
+        let now = Date()
         let clip = StoredClip(
             id: nextID,
             kind: kind,
             text: kind == "text" ? String(data: raw, encoding: .utf8) : nil,
             mime: mime,
-            data_base64: kind == "image" ? raw.base64EncodedString() : nil,
+            data_base64: nil,
             size_bytes: raw.count,
             hash: hash,
             device: device,
+            device_id: deviceID,
             platform: platform,
-            created_at: ISO8601DateFormatter().string(from: Date())
+            created_at: ISO8601DateFormatter().string(from: now)
         )
-        history.insert((clip, raw), at: 0)
-        if history.count > 30 { history.removeLast(history.count - 30) }
-
-        if let json = try? JSONEncoder().encode(clip) {
-            broadcast(event: "clip", data: json)
+        history.insert((clip, raw, now), at: 0)
+        totalHistoryBytes += raw.count
+        while history.count > 30 || (history.count > 1 && totalHistoryBytes > maxHistoryBytes) {
+            let dropped = history.removeLast()
+            totalHistoryBytes -= dropped.raw.count
         }
+
+        broadcastClip(clip: clip, raw: raw)
         writeResponse(conn, status: "200 OK", contentType: "application/json", body: Data("{\"duplicate\":false}".utf8))
     }
 
     private func handleSSE(conn: NWConnection, headers: [String: String], query: [String: String]) {
         let devName = query["device"] ?? headers["x-device"] ?? "client"
+        let devID = query["device_id"] ?? headers["x-device-id"]
         let plat = query["platform"] ?? headers["x-platform"] ?? "other"
-        let sub = Subscriber(conn: conn, device: DeviceRecord(name: devName, platform: plat, connected_at: ISO8601DateFormatter().string(from: Date())))
+        let metaOnly = query["meta"] == "1"
+        let since = Int64(query["since"] ?? "") ?? 0
+        let sub = Subscriber(
+            conn: conn,
+            device: DeviceRecord(id: devID, name: devName, platform: plat, connected_at: ISO8601DateFormatter().string(from: Date())),
+            metaOnly: metaOnly
+        )
         let key = ObjectIdentifier(conn)
         subscribers[key] = sub
         conn.stateUpdateHandler = { [weak self] state in
@@ -952,7 +1181,21 @@ private final class LocalSyncHub: @unchecked Sendable {
 
         let devs = currentDevices()
         let devsJSON = (try? JSONEncoder().encode(devs)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
-        let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\nevent: ready\ndata: {\"clients\":\(devs.count),\"devices\":\(devsJSON)}\n\n"
+        var head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\nevent: ready\ndata: {\"clients\":\(devs.count),\"devices\":\(devsJSON),\"latest_id\":\(nextID)}\n\n"
+        if since > 0, let latest = history.first, latest.clip.id > since, Date().timeIntervalSince(latest.createdAt) <= 600 {
+            let isSelf: Bool
+            if let did = devID, !did.isEmpty, let ldid = latest.clip.device_id, !ldid.isEmpty {
+                isSelf = (did == ldid)
+            } else {
+                isSelf = (latest.clip.device == devName)
+            }
+            if !isSelf {
+                let payloadClip = clipWithInlineBase64IfNeeded(latest.clip, raw: latest.raw, metaOnly: metaOnly)
+                if let json = (try? JSONEncoder().encode(payloadClip)).flatMap({ String(data: $0, encoding: .utf8) }) {
+                    head += "event: clip\ndata: \(json)\n\n"
+                }
+            }
+        }
         conn.send(content: Data(head.utf8), completion: .contentProcessed { [weak self] err in
             if err != nil { self?.removeSubscriber(key) }
         })
@@ -971,9 +1214,36 @@ private final class LocalSyncHub: @unchecked Sendable {
     private func currentDevices() -> [DeviceRecord] {
         var map: [String: DeviceRecord] = [:]
         for sub in subscribers.values {
-            map[sub.device.name] = sub.device
+            let k = (sub.device.id?.isEmpty == false ? sub.device.id! : sub.device.name)
+            map[k] = sub.device
         }
         return map.values.sorted { $0.name < $1.name }
+    }
+
+    private func broadcastClip(clip: StoredClip, raw: Data) {
+        var metaFrame: Data?
+        var fullFrame: Data?
+        for (key, sub) in subscribers {
+            let frame: Data?
+            if sub.metaOnly || clip.kind != "image" {
+                if metaFrame == nil, let d = try? JSONEncoder().encode(clip), let s = String(data: d, encoding: .utf8) {
+                    metaFrame = Data("event: clip\ndata: \(s)\n\n".utf8)
+                }
+                frame = metaFrame
+            } else {
+                if fullFrame == nil {
+                    let full = clipWithInlineBase64IfNeeded(clip, raw: raw, metaOnly: false)
+                    if let d = try? JSONEncoder().encode(full), let s = String(data: d, encoding: .utf8) {
+                        fullFrame = Data("event: clip\ndata: \(s)\n\n".utf8)
+                    }
+                }
+                frame = fullFrame
+            }
+            guard let out = frame else { continue }
+            sub.conn.send(content: out, completion: .contentProcessed { [weak self] err in
+                if err != nil { self?.removeSubscriber(key) }
+            })
+        }
     }
 
     private func broadcast(event: String, data: Data) {

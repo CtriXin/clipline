@@ -509,6 +509,12 @@ private struct SettingsView: View {
                         HStack {
                             Toggle("同步图片（≤10MB）", isOn: $sync.syncImages)
                             Spacer()
+                            Button("复制诊断日志") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(sync.diagnosticReport(), forType: .string)
+                                Clips.ownChangeCount = NSPasteboard.general.changeCount
+                                flashFeedback("已复制同步诊断日志（不含 Token）")
+                            }
                             Button("应用并重连") {
                                 sync.restart()
                                 flashFeedback("已重新连接")
