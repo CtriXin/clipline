@@ -489,7 +489,7 @@ private struct PairDeviceSheet: View {
                     .background(Color.white, in: RoundedRectangle(cornerRadius: 12))
             }
 
-            Text("用 iPhone / Android 相机扫码即可自动登录 ClipSync 网页端，并可一键导入手机快捷指令。")
+            Text("安卓打开 Clipline App 点「扫码配对」直接扫；\niPhone 或未装 App 用相机直接扫。")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

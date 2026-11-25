@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Zero-Gradle ultra-fast APK builder using Android SDK build-tools directly.
-# Requires: ANDROID_HOME (or ANDROID_SDK_ROOT) with platforms/android-34 and build-tools/34.0.0+
+# Bundles ZXing core (pure Java QR decoder) for zero-Play-Services in-app QR pairing.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -13,7 +13,12 @@ if [ -z "$PLATFORM" ] || [ -z "$BUILD_TOOLS" ]; then
 fi
 
 OUT="build"
-mkdir -p "$OUT/gen" "$OUT/classes" "$OUT/dex"
+mkdir -p "$OUT/gen" "$OUT/classes" "$OUT/dex" "$OUT/libs"
+
+ZXING_JAR="$OUT/libs/zxing-core-3.5.3.jar"
+if [ ! -f "$ZXING_JAR" ]; then
+  curl -fsSL "https://repo1.maven.org/maven2/com/google/zxing/core/3.5.3/core-3.5.3.jar" -o "$ZXING_JAR"
+fi
 
 # 1. Compile XML resources
 "$BUILD_TOOLS/aapt2" compile --dir res -o "$OUT/res.zip"
@@ -26,15 +31,16 @@ mkdir -p "$OUT/gen" "$OUT/classes" "$OUT/dex"
 
 # 2. Compile Java sources
 javac --release 11 \
-  -classpath "$PLATFORM/android.jar" \
+  -classpath "$PLATFORM/android.jar:$ZXING_JAR" \
   -d "$OUT/classes" \
   $(find src "$OUT/gen" -name '*.java')
 
-# 3. Dex bytecode
-"$BUILD_TOOLS/d8" --min-api 26 --lib "$PLATFORM/android.jar" --output "$OUT/dex" $(find "$OUT/classes" -name '*.class')
+# 3. Dex bytecode (app + ZXing QR decoder)
+"$BUILD_TOOLS/d8" --min-api 26 --lib "$PLATFORM/android.jar" --output "$OUT/dex" \
+  $(find "$OUT/classes" -name '*.class') "$ZXING_JAR"
 
-# 4. Add classes.dex to APK, zipalign, sign with debug keystore
-(cd "$OUT/dex" && zip -q -u ../unsigned.apk classes.dex)
+# 4. Package, zipalign, sign
+(cd "$OUT/dex" && zip -q -u ../unsigned.apk classes*.dex)
 "$BUILD_TOOLS/zipalign" -f 4 "$OUT/unsigned.apk" "$OUT/aligned.apk"
 
 KEYSTORE="$OUT/debug.keystore"

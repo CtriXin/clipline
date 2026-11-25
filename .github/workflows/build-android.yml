@@ -16,6 +16,11 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - name: Restore stable signing keystore
+        uses: actions/cache@v4
+        with:
+          path: android/build/debug.keystore
+          key: clipline-android-keystore-v1
       - name: Build Clipline.apk
         run: bash android/build.sh
       - name: Upload Clipline.apk
