@@ -234,6 +234,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func showSettings() { settings.show() }
 
+    func showSettings(tab: SettingsTab) { settings.show(tab: tab) }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !settings.bringToFrontIfOpen() {
+            settings.show()
+        }
+        return true
+    }
+
     private func setInbox(_ on: Bool) {
         Inbox.isEnabled = on
         if on { Inbox.apply() } else { Inbox.restore() }
@@ -920,7 +929,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(syncItem)
 
         menu.addItem(ClosureMenuItem("配对新设备（二维码）…") { [weak self] in
-            self?.showSettings()
+            self?.showSettings(tab: .sync)
         })
 
         menu.addItem(.separator())

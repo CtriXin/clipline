@@ -10,43 +10,89 @@ struct SettingsActions {
     var changeShortcut: () -> Void
 }
 
+enum SettingsTab: String, CaseIterable, Hashable {
+    case general
+    case sync
+    case permissions
+}
+
 /// One small window for everything that is not used every day, and the
 /// place that explains the one permission Clipline can ask for.
 @MainActor
-final class SettingsWindow {
+final class SettingsWindow: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private let line: Line
     private let actions: SettingsActions
+    private let model = SettingsTabModel()
 
     init(line: Line, actions: SettingsActions) {
         self.line = line
         self.actions = actions
+        super.init()
     }
 
-    func show() {
+    func show(tab: SettingsTab? = nil) {
+        if let tab { model.selectedTab = tab }
         if window == nil {
-            let host = NSHostingController(rootView: SettingsView(line: line, actions: actions))
+            let host = NSHostingController(rootView: SettingsView(line: line, actions: actions, tabModel: model))
             let w = NSWindow(contentViewController: host)
             w.title = L("Clipline Settings")
-            w.styleMask = [.titled, .closable]
+            w.styleMask = [.titled, .closable, .miniaturizable]
             w.isReleasedWhenClosed = false
+            w.delegate = self
             w.center()
             window = w
+        }
+        // Show in Dock & Cmd+Tab while Settings is open so it is never lost behind other windows.
+        if NSApp.activationPolicy() != .regular {
+            NSApp.setActivationPolicy(.regular)
+            NSApp.applicationIconImage = NSImage(named: "Clipline") ?? NSApp.applicationIconImage
         }
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
     }
+
+    func bringToFrontIfOpen() -> Bool {
+        guard let window, window.isVisible else { return false }
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        return true
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        // Return cleanly to menu-bar-only mode once Settings is closed.
+        DispatchQueue.main.async {
+            if self.window?.isVisible != true {
+                NSApp.setActivationPolicy(.accessory)
+            }
+        }
+    }
+}
+
+@MainActor
+private final class SettingsTabModel: ObservableObject {
+    @Published var selectedTab: SettingsTab = .general
 }
 
 /// Full Disk Access is the only way into another app's own folder, which is
 /// where WeChat keeps the pictures it drags out.
 enum DiskAccess {
-    /// A file only readable with Full Disk Access: opening it is the test.
+    /// Files only readable with Full Disk Access: opening any existing one is the test.
     static var isGranted: Bool {
-        let probe = URL(fileURLWithPath: "/Library/Application Support/com.apple.TCC/TCC.db")
-        guard let handle = try? FileHandle(forReadingFrom: probe) else { return false }
-        try? handle.close()
-        return true
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let probes = [
+            "/Library/Application Support/com.apple.TCC/TCC.db",
+            home + "/Library/Safari/Bookmarks.plist",
+            home + "/Library/Messages/chat.db",
+        ]
+        for path in probes {
+            guard FileManager.default.fileExists(atPath: path) else { continue }
+            if let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)) {
+                try? handle.close()
+                return true
+            }
+        }
+        return false
     }
 
     static func openSettings() {
@@ -55,6 +101,15 @@ enum DiskAccess {
         Task { @MainActor in
             PermissionDragGuide.shared.show()
         }
+    }
+
+    static func relaunchApp() {
+        let appURL = Bundle.main.bundleURL
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/sh")
+        task.arguments = ["-c", "sleep 0.4; open -n \"\(appURL.path)\""]
+        try? task.run()
+        NSApp.terminate(nil)
     }
 }
 
@@ -152,9 +207,10 @@ private struct PermissionDragGuideView: View {
                 }
 
                 HStack {
-                    Button("在访达中显示 App") {
+                    Button("在访达中显示") {
                         NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
                     }
+                    Button("重启生效") { DiskAccess.relaunchApp() }
                     Spacer()
                     Button("关闭") { onClose() }
                 }
@@ -222,6 +278,7 @@ private struct SettingsView: View {
     @ObservedObject var line: Line
     @ObservedObject private var sync = CrossSync.shared
     let actions: SettingsActions
+    @ObservedObject var tabModel: SettingsTabModel
 
     @State private var shortcut = Shortcut.saved.display
     @State private var zone = HotZone.saved
@@ -240,6 +297,39 @@ private struct SettingsView: View {
     }
 
     var body: some View {
+        VStack(spacing: 0) {
+            // Top macOS-style segmented tab bar
+            Picker("", selection: $tabModel.selectedTab) {
+                Label("通用", systemImage: "gearshape").tag(SettingsTab.general)
+                Label("跨设备同步", systemImage: "arrow.triangle.2.circlepath").tag(SettingsTab.sync)
+                Label("权限", systemImage: "hand.raised").tag(SettingsTab.permissions)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 18)
+            .padding(.top, 14)
+            .padding(.bottom, 6)
+
+            Group {
+                switch tabModel.selectedTab {
+                case .general:
+                    generalTab
+                case .sync:
+                    syncTab
+                case .permissions:
+                    permissionsTab
+                }
+            }
+        }
+        .frame(width: 540, height: 470)
+        .sheet(isPresented: $showPairSheet) {
+            PairDeviceSheet(sync: sync, dismiss: { showPairSheet = false })
+        }
+        .onAppear(perform: reload)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in reload() }
+    }
+
+    private var generalTab: some View {
         Form {
             Section(L("General")) {
                 LabeledContent(L("Shortcut to bring the line down")) {
@@ -270,7 +360,6 @@ private struct SettingsView: View {
                     .onChange(of: sound) { _, on in line.soundOn = on }
                 Toggle(L("Open at login"), isOn: $login)
                     .onChange(of: login) { _, on in
-                        // reload() sets these too: only act on a real change.
                         guard on != (SMAppService.mainApp.status == .enabled) else { return }
                         AppDelegate.toggleLaunchAtLogin()
                         login = SMAppService.mainApp.status == .enabled
@@ -290,6 +379,16 @@ private struct SettingsView: View {
                 .onChange(of: clipboard) { _, on in if on != Clips.isEnabled { actions.setClipboard(on) } }
             }
 
+            Section {
+                LabeledContent(L("Version"), value: version)
+                Link(L("Clipline on GitHub"), destination: URL(string: "https://github.com/CtriXin/clipline")!)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var syncTab: some View {
+        Form {
             Section {
                 Toggle(isOn: $sync.isEnabled) {
                     HStack(spacing: 6) {
@@ -316,8 +415,8 @@ private struct SettingsView: View {
                                 ForEach(sync.onlineDevices) { dev in
                                     Text("\(dev.icon) \(dev.name)")
                                         .font(.caption)
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 3)
+                                        .padding(.horizontal, 9)
+                                        .padding(.vertical, 4)
                                         .background(Color.accentColor.opacity(0.12), in: Capsule())
                                 }
                             }
@@ -326,57 +425,36 @@ private struct SettingsView: View {
 
                     HStack(spacing: 8) {
                         Button("扫码配对") { showPairSheet = true }
+                            .buttonStyle(.borderedProminent)
                             .disabled(sync.token.isEmpty)
                         Button("粘贴配对码") {
                             let text = NSPasteboard.general.string(forType: .string) ?? ""
-                            pairFeedback = sync.importPairing(text) ? "已配对并连接" : "剪贴板中无有效配对码"
+                            flashFeedback(sync.importPairing(text) ? "已配对并连接" : "剪贴板中无有效配对码")
                         }
                         if !sync.token.isEmpty {
                             Button("复制配对码") {
                                 NSPasteboard.general.clearContents()
                                 NSPasteboard.general.setString(sync.pairingCode, forType: .string)
                                 Clips.ownChangeCount = NSPasteboard.general.changeCount
-                                pairFeedback = "已复制，去另一台设备点「粘贴配对码」"
+                                flashFeedback("已复制，去另一台设备点「粘贴配对码」")
                             }
                         }
                         Spacer()
                     }
 
                     HStack(spacing: 6) {
-                        Text(syncGuideText)
+                        Text(pairFeedback ?? syncGuideText)
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(pairFeedback != nil ? Color.accentColor : .secondary)
                         Spacer()
                         if !sync.hasTailscale {
                             Link("安装 Tailscale ↗", destination: URL(string: "https://tailscale.com/download")!)
                                 .font(.caption)
                         }
                     }
-
-                    if let pairFeedback {
-                        Text(pairFeedback).font(.caption).foregroundStyle(.secondary)
-                    }
-
-                    DisclosureGroup("连接设置", isExpanded: $showSyncDetails) {
-                        if !sync.hostMode {
-                            TextField("Hub 地址", text: $sync.hubURL)
-                                .textFieldStyle(.roundedBorder)
-                        } else {
-                            LabeledContent("监听地址", value: sync.shareableHubURL)
-                        }
-                        SecureField("Token", text: $sync.token)
-                            .textFieldStyle(.roundedBorder)
-                        TextField("设备名", text: $sync.deviceName)
-                            .textFieldStyle(.roundedBorder)
-                        HStack {
-                            Toggle("同步图片（≤10MB）", isOn: $sync.syncImages)
-                            Spacer()
-                            Button("重连") { sync.restart() }
-                        }
-                    }
                 } else {
                     HStack(spacing: 6) {
-                        Text("支持 Mac / Windows / 手机互通：一台开「本机作主机」，其余粘贴配对码或扫码。")
+                        Text("支持 Mac / Windows / 手机互通：一台开「本机作主机」，其余扫码或粘贴配对码。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Spacer()
@@ -384,10 +462,67 @@ private struct SettingsView: View {
                             .font(.caption)
                     }
                 }
-            } header: {
-                Text("跨设备同步")
             }
 
+            if sync.isEnabled {
+                Section {
+                    // Full-row clickable header (fixes SwiftUI DisclosureGroup small chevron hit area)
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.18)) { showSyncDetails.toggle() }
+                    } label: {
+                        HStack {
+                            Image(systemName: showSyncDetails ? "chevron.down" : "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 14)
+                            Text("连接设置")
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            Text(showSyncDetails ? "收起" : "展开")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+
+                    if showSyncDetails {
+                        if !sync.hostMode {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Hub 地址").font(.caption).foregroundStyle(.secondary)
+                                TextField("http://100.x.y.z:8765", text: $sync.hubURL)
+                                    .textFieldStyle(.roundedBorder)
+                            }
+                        } else {
+                            LabeledContent("监听地址", value: sync.shareableHubURL)
+                        }
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Token").font(.caption).foregroundStyle(.secondary)
+                            SecureField("访问 Token", text: $sync.token)
+                                .textFieldStyle(.roundedBorder)
+                        }
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("设备名").font(.caption).foregroundStyle(.secondary)
+                            TextField("本机设备名", text: $sync.deviceName)
+                                .textFieldStyle(.roundedBorder)
+                        }
+                        HStack {
+                            Toggle("同步图片（≤10MB）", isOn: $sync.syncImages)
+                            Spacer()
+                            Button("应用并重连") {
+                                sync.restart()
+                                flashFeedback("已重新连接")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var permissionsTab: some View {
+        Form {
             Section {
                 HStack(alignment: .firstTextBaseline) {
                     Text(L("Full Disk Access"))
@@ -399,37 +534,36 @@ private struct SettingsView: View {
                 Text("仅用于拖拽微信等受保护目录内的图片（直接 ⌘C 复制无需此权限）。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                HStack(spacing: 12) {
+                HStack(spacing: 10) {
                     if !diskAccess {
-                        DraggableAppIconView(size: 36)
-                            .frame(width: 36, height: 36)
+                        DraggableAppIconView(size: 40)
+                            .frame(width: 40, height: 40)
                             .help("拖进系统设置的完全磁盘访问列表")
                     }
                     Button(L("Open Privacy Settings…")) { DiskAccess.openSettings() }
-                    Spacer()
+                        .buttonStyle(.borderedProminent)
                     if !diskAccess {
-                        Text("把图标拖进系统设置列表即可")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        Button("重启生效") { DiskAccess.relaunchApp() }
                     }
+                    Spacer()
+                }
+                if !diskAccess {
+                    Text("开启开关后点「重启生效」；若已开仍未生效，在左侧列表选 Clipline 点 `-` 移除后重新拖入。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             } header: {
                 Text(L("Permissions"))
             }
-
-            Section {
-                LabeledContent(L("Version"), value: version)
-                Link(L("Clipline on GitHub"), destination: URL(string: "https://github.com/CtriXin/clipline")!)
-            }
         }
         .formStyle(.grouped)
-        .frame(width: 540, height: 640)
-        .sheet(isPresented: $showPairSheet) {
-            PairDeviceSheet(sync: sync, dismiss: { showPairSheet = false })
+    }
+
+    private func flashFeedback(_ text: String) {
+        pairFeedback = text
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+            if pairFeedback == text { pairFeedback = nil }
         }
-        .onAppear(perform: reload)
-        // Back from System Settings: show what changed there.
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in reload() }
     }
 
     private var syncDotColor: Color {
