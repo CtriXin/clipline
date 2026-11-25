@@ -1,0 +1,25 @@
+name: Build Windows Clipline.exe
+
+on:
+  push:
+    branches: [v0.3-dev, main]
+    paths:
+      - 'windows/**'
+      - '.github/workflows/build-windows.yml'
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Clipline.exe (.NET Framework 4.8)
+        shell: pwsh
+        run: |
+          .\windows\build.ps1
+          Get-Item .\windows\build\Clipline.exe | Select-Object Name, Length
+      - name: Upload Clipline.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: Clipline-windows-exe
+          path: windows/build/Clipline.exe
