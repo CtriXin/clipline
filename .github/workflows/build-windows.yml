@@ -17,7 +17,7 @@ jobs:
         shell: pwsh
         run: |
           .\windows\build.ps1
-          Get-Item .\windows\build\Clipline.exe | Select-Object Name, Length
+          Get-Item .\build\Clipline.exe | Select-Object Name, Length
       - name: Upload Clipline.exe
         uses: actions/upload-artifact@v4
         with:
